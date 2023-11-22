@@ -25,3 +25,4 @@ class Train(Dictable):
 class Config:
    model_params = ModelParams
    train = Train
+   save_name = "model_{0}.safetensor"
