@@ -7,7 +7,7 @@ import numpy as np
 from config import Config
 from util import write_graph
 from typing import Dict
-import time, datetime, os
+import time, datetime, os, shutil
 
 class TransformerBlock:
    def __init__(self, embed_dim, num_heads, ff_dim, act=lambda x: x.relu(), dropout=0.1):
@@ -72,7 +72,8 @@ def train():
    model = Transformer(**Config.model_params.to_dict())
    opt = Adam(get_parameters(model), Config.train.lr)
    X_train, X_test = load_train_test()
-   weights_folder = f"weights/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
+   type_name = os.path.basename(os.path.dirname(__file__))
+   weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
 
    s_time = time.time()
    step, is_test = 0, False
@@ -81,15 +82,16 @@ def train():
    train_context = Config.model_params.max_context
    while True:
       if not is_test:
+         data  = X_train
          np.random.seed(step)
-         data = X_train
-         index = np.random.randint(0, len(X_train)-train_context)
       else:
-         data = X_test
-         index = 0
+         data  = X_test
+         np.random.seed(1337)
+      
+      index = np.random.randint(0, len(data)-train_context, size=Config.train.batch_size)
 
-      X = Tensor(X_train[index  :index+train_context  ], dtype=dtypes.float32, requires_grad=False).reshape(1,-1)
-      Y = Tensor(X_train[index+1:index+train_context+1], dtype=dtypes.float32).reshape(1,-1)
+      X = Tensor([data[i  :i+train_context  ] for i in index], dtype=dtypes.float32, requires_grad=False).reshape(1,-1)
+      Y = Tensor([data[i+1:i+train_context+1] for i in index], dtype=dtypes.float32).reshape(1,-1)
       
       output = model(X)
       loss = output.sparse_categorical_crossentropy(Y)
@@ -108,10 +110,10 @@ def train():
       if (step+1) % Config.train.test_every == 0:
          if is_test:
             step += 1
-            write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png")
-            write_graph(train_acc,  test_acc,  f"{weights_folder}/graph_acc.png")
             te = Config.train.test_every
             print(f"Step {str(step): >5} | Train Loss: {sum(train_loss[-te:])/te:.4f} | Train Accuracy: {100.0*sum(train_acc[-te:])/te:.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*test_acc[-1]:.2f}% | {(time.time() - s_time) / float(te):.2f} sec/iter")
+            write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png")
+            write_graph(train_acc,  test_acc,  f"{weights_folder}/graph_acc.png", ylim=(0,1))
             s_time = time.time()
          is_test = not is_test
       else:
@@ -121,6 +123,9 @@ def train():
          if not os.path.exists(weights_folder):
             os.makedirs(weights_folder)
          safe_save(get_state_dict(model), os.path.join(weights_folder, Config.save_name.format(step)))
+         config_filepath = f"{weights_folder}/config.py"
+         if not os.path.exists(config_filepath):
+            shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
 
 if __name__ == "__main__":
    train()

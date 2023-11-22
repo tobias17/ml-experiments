@@ -1,10 +1,4 @@
-from typing import Dict
-
-class Dictable:
-   @classmethod
-   def to_dict(cls) -> Dict:
-      diff = set(dir(cls)) - set(dir(Dictable))
-      return { k: getattr(cls, k) for k in diff }
+from util import Dictable
 
 class ModelParams(Dictable):
    vocab_size = 65
@@ -15,12 +9,12 @@ class ModelParams(Dictable):
    max_context = 256
 
 class Train(Dictable):
-   lr = 2**-12
-   batch_size = 1
+   lr = 2**-16
+   batch_size = 12
    dataset = "datasets/shakespear.txt"
    split = 0.9
-   test_every = 10
-   save_every = 50
+   test_every = 50
+   save_every = 500
 
 class Config:
    model_params = ModelParams
