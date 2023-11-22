@@ -1,6 +1,10 @@
 from tinygrad.tensor import Tensor
 from tinygrad.nn import Embedding, Linear
-import yaml, os
+from tinygrad.nn.optim import Adam
+from tinygrad.nn.state import get_parameters
+from config import Config
+import os
+from typing import Dict
 
 class TransformerBlock:
    def __init__(self, embed_dim, num_heads, ff_dim, act=lambda x: x.relu(), dropout=0.1):
@@ -43,13 +47,21 @@ class Transformer:
       self.layers = [TransformerBlock(embed_dim, n_heads, ff_dim) for _ in range(layers)]
       self.class_head = Linear(embed_dim, vocab_size)
 
-def train(model: Transformer):
-   pass
+def load_train_test():
+   with open(Config.train.dataset) as f:
+      all_text = f.read()
+   split_i = int(Config.train.split * len(all_text))
+   return all_text[:split_i], all_text[split_i:]
+
+def train():
+   model = Transformer(**Config.model_params.to_dict())
+   optim = Adam(get_parameters(model), Config.train.lr)
+
+   X_train, X_test = load_train_test()
+
+   step, is_test = 0, False
+   while True:
+      return
 
 if __name__ == "__main__":
-   yaml_filepath = os.path.join(os.path.dirname(__file__), "config.yaml")
-   with open(yaml_filepath) as f:
-      yaml_data = yaml.safe_load(f)
-
-   model = Transformer(**yaml_data["model_params"])
-   train(model)
+   train()
