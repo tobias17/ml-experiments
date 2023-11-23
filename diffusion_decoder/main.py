@@ -5,7 +5,7 @@ from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, s
 from tinygrad.helpers import dtypes # type: ignore
 import numpy as np
 from config import Config
-from util import write_graph
+from util import write_graph, Schedules
 from typing import Dict
 import time, datetime, os, shutil, math
 from tqdm import tqdm, trange # type: ignore
@@ -75,7 +75,12 @@ def make_alphas(show=False) -> np.ndarray:
    T = Config.model_params.timesteps
    a = np.zeros((T,), dtype=np.float32)
    for i in range(T):
-      a[i] = 1.0 - (i / (T-1))
+      if Config.schedule == Schedules.LINEAR:
+         a[i] = 1.0 - (i / (T-1))
+      elif Config.schedule == Schedules.SQRT:
+         a[i] = 1.0 - (i / (T-1))**0.5
+      else:
+         raise NotImplementedError()
    if show:
       import matplotlib.pyplot as plt
       plt.plot(np.arange(T), a)
@@ -187,6 +192,9 @@ def train():
          config_filepath = f"{weights_folder}/config.py"
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
+         main_filepath = f"{weights_folder}/{os.path.basename(__file__)}"
+         if not os.path.exists(main_filepath):
+            shutil.copyfile(__file__, main_filepath)
 
 def generate(count=20, timestep_reduce=100, use_trange=True, model=None, start="\n"):
    load_train_test()
@@ -252,4 +260,4 @@ ANTONIO:
 """
 
 if __name__ == "__main__":
-   print(generate(count=128, start=text))
+   train()

@@ -1,4 +1,4 @@
-from util import Dictable
+from util import Dictable, Schedules
 
 class ModelParams(Dictable):
    timesteps   = 400
@@ -27,3 +27,4 @@ class Config:
    train = Train
    save_name = "model_{0}.safetensor"
    timestep_delta = 100
+   schedule = Schedules.SQRT

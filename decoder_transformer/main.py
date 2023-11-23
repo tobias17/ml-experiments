@@ -8,7 +8,7 @@ from config import Config
 from util import write_graph
 from typing import Dict
 import time, datetime, os, shutil
-from tqdm import tqdm, trange
+from tqdm import tqdm, trange # type: ignore
 
 class TransformerBlock:
    def __init__(self, embed_dim, num_heads, ff_dim, act=lambda x: x.relu(), dropout=0.1):
@@ -140,6 +140,9 @@ def train():
          config_filepath = f"{weights_folder}/config.py"
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
+         main_filepath = f"{weights_folder}/{os.path.basename(__file__)}"
+         if not os.path.exists(main_filepath):
+            shutil.copyfile(__file__, main_filepath)
 
 def generate(count=20, print_output=True, use_trange=False, model=None):
    load_train_test()
