@@ -5,16 +5,18 @@ class ModelParams(Dictable):
    layers = 4
    embed_dim = 256
    n_heads = 8
-   ff_dim = 512
+   ff_dim = embed_dim * 2
    max_context = 256
 
 class Train(Dictable):
-   lr = 2**-16
-   batch_size = 12
+   learning_rate = 2**-12
+   batch_size = 64
    dataset = "datasets/shakespear.txt"
    split = 0.9
    test_every = 50
    save_every = 500
+   gen_every  = 500
+   gen_count  = 512
 
 class Config:
    model_params = ModelParams

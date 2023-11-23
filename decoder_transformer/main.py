@@ -1,13 +1,14 @@
 from tinygrad.tensor import Tensor # type: ignore
 from tinygrad.nn import Embedding, Linear # type: ignore
 from tinygrad.nn.optim import Adam # type: ignore
-from tinygrad.nn.state import get_parameters, get_state_dict, safe_save # type: ignore
+from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, safe_save, safe_load # type: ignore
 from tinygrad.helpers import dtypes # type: ignore
 import numpy as np
 from config import Config
 from util import write_graph
 from typing import Dict
 import time, datetime, os, shutil
+from tqdm import tqdm, trange
 
 class TransformerBlock:
    def __init__(self, embed_dim, num_heads, ff_dim, act=lambda x: x.relu(), dropout=0.1):
@@ -57,7 +58,8 @@ class Transformer:
 def load_train_test():
    with open(Config.train.dataset) as f:
       all_text = f.read()
-   chars = set(all_text)
+   chars = list(set(all_text))
+   chars = sorted(chars)
    c_to_t = { c:i for i,c in enumerate(chars) }
    t_to_c = { v:k for k,v in c_to_t.items() }
    global encode, decode
@@ -70,16 +72,18 @@ def load_train_test():
 
 def train():
    model = Transformer(**Config.model_params.to_dict())
-   opt = Adam(get_parameters(model), Config.train.lr)
+   opt = Adam(get_parameters(model), Config.train.learning_rate)
    X_train, X_test = load_train_test()
    type_name = os.path.basename(os.path.dirname(__file__))
    weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
+
+   BS = Config.train.batch_size
+   train_context = Config.model_params.max_context
 
    s_time = time.time()
    step, is_test = 0, False
    train_loss, test_loss = [], []
    train_acc,  test_acc  = [], []
-   train_context = Config.model_params.max_context
    while True:
       if not is_test:
          data  = X_train
@@ -90,8 +94,8 @@ def train():
       
       index = np.random.randint(0, len(data)-train_context, size=Config.train.batch_size)
 
-      X = Tensor([data[i  :i+train_context  ] for i in index], dtype=dtypes.float32, requires_grad=False).reshape(1,-1)
-      Y = Tensor([data[i+1:i+train_context+1] for i in index], dtype=dtypes.float32).reshape(1,-1)
+      X = Tensor([data[i  :i+train_context  ] for i in index], dtype=dtypes.float32, requires_grad=False).reshape(BS,-1)
+      Y = Tensor([data[i+1:i+train_context+1] for i in index], dtype=dtypes.float32).reshape(BS,-1)
       
       output = model(X)
       loss = output.sparse_categorical_crossentropy(Y)
@@ -119,6 +123,14 @@ def train():
       else:
          step += 1
 
+      if step % Config.train.gen_every == 0:
+         text = generate(Config.train.gen_count, False, True, model)
+         gen_folder = f"{weights_folder}/gens"
+         if not os.path.exists(gen_folder):
+            os.makedirs(gen_folder)
+         with open(f"{gen_folder}/text_{step}.txt", "w") as f:
+            f.write(text)
+
       if step % Config.train.save_every == 0:
          if not os.path.exists(weights_folder):
             os.makedirs(weights_folder)
@@ -126,6 +138,47 @@ def train():
          config_filepath = f"{weights_folder}/config.py"
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
+
+def generate(count=20, print_output=True, use_trange=False, model=None):
+   load_train_test()
+   if model is None:
+      model = Transformer(**Config.model_params.to_dict())
+      root = f"weights/{os.path.basename(os.path.dirname(__file__))}"
+      last_folder = [f"{root}/{f}" for f in os.listdir(root)]
+      last_folder = max([f for f in last_folder if os.path.isdir(f)], key=os.path.getmtime)
+      last_weight = [f"{last_folder}/{f}" for f in os.listdir(last_folder) if f.startswith("model_")]
+      last_weight = max(last_weight, key=os.path.getmtime)
+      print(f"Using {last_weight}")
+      load_state_dict(model, safe_load(last_weight))
+
+   CONTEXT = Config.model_params.max_context
+   output = ""
+   all_output = ""
+
+   X = Tensor(encode("\n"), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CONTEXT-1)) )
+   for i in (trange(count) if use_trange else range(count)):
+      assert X.shape == (1,CONTEXT,)
+      pull_i = min(i, CONTEXT-1)
+      pred = model(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
+      char = decode([pred.numpy().item()])[0]
+      if char == "\n":
+         if print_output: print(output)
+         output = ""
+      else:
+         output += char
+      all_output += char
+
+      X_np = np.zeros((1,CONTEXT+1))
+      X_np[:,:-1] = X.numpy()
+      if i + 1 < CONTEXT:
+         X_np[:,i+1:i+2] = pred.numpy()
+         X = Tensor(X_np[:,:-1], dtype=dtypes.float32, requires_grad=False)
+      else:
+         X_np[:,-1:] = pred.numpy()
+         X = Tensor(X_np[:,1:], dtype=dtypes.float32, requires_grad=False)
+   
+   if print_output and output: print(output)
+   return all_output
 
 if __name__ == "__main__":
    train()
