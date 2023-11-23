@@ -106,7 +106,7 @@ def train():
    weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
 
    BS = Config.train.batch_size
-   train_context = Config.model_params.max_context
+   CS = Config.model_params.max_context
 
    s_time = time.time()
    step, is_test = 0, False
@@ -120,26 +120,26 @@ def train():
          data  = X_test
          np.random.seed(1337)
       
-      index = np.random.randint(0, len(data)-train_context, size=BS)
+      index = np.random.randint(0, len(data)-CS, size=BS)
       max_diffuse = math.ceil(Config.model_params.timesteps / Config.timestep_delta)
       diff_start_index  = np.random.randint(1, Config.model_params.max_context - max_diffuse - 1)
       diff_start_amount = np.random.randint(1, Config.model_params.timesteps - 1)
       diff_ladder_size  = 1 + math.floor((Config.model_params.timesteps - diff_start_amount) / Config.timestep_delta)
 
       amnt = diff_start_index + diff_ladder_size
-      X_tok = np.zeros((BS,amnt))
-      X_tok[:,:] = np.array([data[i:i+amnt] for i in index], dtype=np.float32)
+      X_tok = np.zeros((BS,CS))
+      X_tok[:,:amnt] = np.array([data[i:i+amnt] for i in index], dtype=np.float32)
 
-      alphas = np.ones((BS,amnt), dtype=np.float32)
-      timesteps = np.zeros((BS,amnt), dtype=np.float32)
+      alphas = np.ones((BS,CS), dtype=np.float32)
+      timesteps = np.zeros((BS,CS), dtype=np.float32)
       for i in range(diff_ladder_size):
          ts = diff_start_amount + i*Config.timestep_delta
          alphas[:,diff_start_index+i] = all_alphas[int(ts)]
          timesteps[:,diff_start_index+i] = ts
-      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(BS,amnt,1)
+      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(BS,CS,1)
 
       x_0 = model.make_x_0_from(Tensor(X_tok, dtype=dtypes.float32, requires_grad=False))
-      x_t = x_0*alphas + ((1-alphas)*Tensor.randn(BS,amnt,Config.model_params.latent_dim)).detach()
+      x_t = x_0*alphas + ((1-alphas)*Tensor.randn(BS,CS,Config.model_params.latent_dim)).detach()
 
       e_t = model(x_t, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False))
       pred_x_0 = x_t[:,diff_start_index:diff_start_index+diff_ladder_size] - e_t[:,diff_start_index:diff_start_index+diff_ladder_size]
