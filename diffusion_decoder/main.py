@@ -107,24 +107,21 @@ def train():
 
    BS = Config.train.batch_size
    CS = Config.model_params.max_context
+   TS = Config.model_params.timesteps
 
    s_time = time.time()
-   step, is_test = 0, False
+   step, test_index = 0, 0
    train_loss, test_loss = [], []
-   train_acc,  test_acc  = [], []
+   train_accs, test_accs = [[] for _ in range(4)], [[] for _ in range(4)]
    while True:
-      if not is_test:
-         data  = X_train
-         np.random.seed(step)
-      else:
-         data  = X_test
-         np.random.seed(1337)
+      np.random.seed(step if test_index == 0 else 1337)
+      data = X_train if test_index <= 1 else X_test
       
       index = np.random.randint(0, len(data)-CS, size=BS)
-      max_diffuse = math.ceil(Config.model_params.timesteps / Config.timestep_delta)
+      max_diffuse = math.ceil(TS / Config.timestep_delta)
       diff_start_index  = np.random.randint(1, Config.model_params.max_context - max_diffuse - 1)
-      diff_start_amount = np.random.randint(1, Config.model_params.timesteps - 1)
-      diff_ladder_size  = 1 + math.floor((Config.model_params.timesteps - diff_start_amount) / Config.timestep_delta)
+      diff_start_amount = np.random.randint(1, TS - 1) if test_index==0 else Config.timestep_delta - 1
+      diff_ladder_size  = 1 + math.floor((TS - diff_start_amount - 1) / Config.timestep_delta)
 
       amnt = diff_start_index + diff_ladder_size
       X_tok = np.zeros((BS,CS))
@@ -147,27 +144,30 @@ def train():
 
       Y = Tensor([data[i+diff_start_index:i+amnt] for i in index], dtype=dtypes.float32).reshape(BS,-1)
       loss = output.sparse_categorical_crossentropy(Y)
-      acc = (output.argmax(axis=-1)==Y).mean()
 
-      loss_l, acc_l = (test_loss, test_acc) if is_test else (train_loss, train_acc)
-      loss_l.append(loss.numpy().item())
-      acc_l.append(acc.numpy().item())
-
-      if not is_test:
+      if test_index == 0:
          loss.realize()
          opt.zero_grad()
          loss.backward()
          opt.step()
+      else:
+         loss_l, accs_l = (test_loss, test_accs) if test_index==2 else (train_loss, train_accs)
+         loss_l.append(loss.numpy().item())
+         for i in range(4):
+            accs_l[i].append((output[:,i:i+1].argmax(axis=-1)==Y[:,i:i+1]).mean().numpy().item())
 
       if (step+1) % Config.train.test_every == 0:
-         if is_test:
+         if test_index == 2:
             step += 1
             te = Config.train.test_every
-            print(f"Step {str(step): >5} | Train Loss: {sum(train_loss[-te:])/te:.4f} | Train Accuracy: {100.0*sum(train_acc[-te:])/te:.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*test_acc[-1]:.2f}% | {(time.time() - s_time) / float(te):.2f} sec/iter")
+            tc = 4
+            print(f"Step {str(step): >5} | Train Loss: {sum(train_loss[-te:])/te:.4f} | Train Accuracy: {100.0*sum(sum(train_accs[i][-te:]) for i in range(tc))/(te*tc):.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*sum(test_accs[i][-1] for i in range(tc))/tc:.2f}% | {(time.time() - s_time) / float(te):.2f} sec/iter")
             write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png")
-            write_graph(train_acc,  test_acc,  f"{weights_folder}/graph_acc.png", ylim=(0,1))
+            write_graph(train_accs, test_accs, f"{weights_folder}/graph_acc.png", ylim=(0,1), segmented=True)
             s_time = time.time()
-         is_test = not is_test
+            test_index = 0
+         else:
+            test_index += 1
       else:
          step += 1
 
