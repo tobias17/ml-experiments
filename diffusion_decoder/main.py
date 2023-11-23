@@ -7,7 +7,7 @@ import numpy as np
 from config import Config
 from util import write_graph
 from typing import Dict
-import time, datetime, os, shutil
+import time, datetime, os, shutil, math
 from tqdm import tqdm, trange # type: ignore
 
 class TransformerBlock:
@@ -63,13 +63,24 @@ class Transformer:
       assert latent.shape[2] == self.latent_dim
       timepos = self.time_embed(timesteps) + self.pos_embed(Tensor.arange(0, latent.shape[1], requires_grad=False).reshape((1,-1)))
       x = latent.cat(timepos, dim=-1)
-      return x.sequential(self.n_layers)
-
-   def estimate(self, x:Tensor) -> Tensor:
+      x = x.sequential(self.n_layers)
       B,T,C = x.shape
       assert C > self.latent_dim
-      latent = x.shrink( ((0,B), (0,T), (0,self.latent_dim)) )
-      return self.class_head(latent)
+      return x.shrink( ((0,B), (0,T), (0,self.latent_dim)) )
+
+   def estimate(self, latent:Tensor) -> Tensor:
+      return self.class_head(latent).log_softmax()
+
+def make_alphas(show=False) -> np.ndarray:
+   T = Config.model_params.timesteps
+   a = np.zeros((T,), dtype=np.float32)
+   for i in range(T):
+      a[i] = 1.0 - (i / (T-1))
+   if show:
+      import matplotlib.pyplot as plt
+      plt.plot(np.arange(T), a)
+      plt.show()
+   return a
 
 def load_train_test():
    with open(Config.train.dataset) as f:
@@ -89,6 +100,7 @@ def load_train_test():
 def train():
    model = Transformer(**Config.model_params.to_dict())
    opt = Adam(get_parameters(model), Config.train.learning_rate)
+   all_alphas = make_alphas()
    X_train, X_test = load_train_test()
    type_name = os.path.basename(os.path.dirname(__file__))
    weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
@@ -109,11 +121,31 @@ def train():
          np.random.seed(1337)
       
       index = np.random.randint(0, len(data)-train_context, size=BS)
+      max_diffuse = math.ceil(Config.model_params.timesteps / Config.timestep_delta)
+      diff_start_index  = np.random.randint(1, Config.model_params.max_context - max_diffuse - 1)
+      diff_start_amount = np.random.randint(1, Config.model_params.timesteps - 1)
+      diff_ladder_size  = 1 + math.floor((Config.model_params.timesteps - diff_start_amount) / Config.timestep_delta)
 
-      X = Tensor([data[i  :i+train_context  ] for i in index], dtype=dtypes.float32, requires_grad=False).reshape(BS,-1)
-      Y = Tensor([data[i+1:i+train_context+1] for i in index], dtype=dtypes.float32).reshape(BS,-1)
-      
-      output = model(X)
+      amnt = diff_start_index + diff_ladder_size
+      X_tok = np.zeros((BS,amnt))
+      X_tok[:,:] = np.array([data[i:i+amnt] for i in index], dtype=np.float32)
+
+      alphas = np.ones((BS,amnt), dtype=np.float32)
+      timesteps = np.zeros((BS,amnt), dtype=np.float32)
+      for i in range(diff_ladder_size):
+         ts = diff_start_amount + i*Config.timestep_delta
+         alphas[:,diff_start_index+i] = all_alphas[int(ts)]
+         timesteps[:,diff_start_index+i] = ts
+      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(BS,amnt,1)
+
+      x_0 = model.make_x_0_from(Tensor(X_tok, dtype=dtypes.float32, requires_grad=False))
+      x_t = x_0*alphas + ((1-alphas)*Tensor.randn(BS,amnt,Config.model_params.latent_dim)).detach()
+
+      e_t = model(x_t, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False))
+      pred_x_0 = x_t[:,diff_start_index:diff_start_index+diff_ladder_size] - e_t[:,diff_start_index:diff_start_index+diff_ladder_size]
+      output = model.estimate(pred_x_0)
+
+      Y = Tensor([data[i+diff_start_index:i+amnt] for i in index], dtype=dtypes.float32).reshape(BS,-1)
       loss = output.sparse_categorical_crossentropy(Y)
       acc = (output.argmax(axis=-1)==Y).mean()
 

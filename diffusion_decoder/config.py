@@ -13,16 +13,17 @@ class ModelParams(Dictable):
    assert embed_dim == latent_dim + timepos_dim
 
 class Train(Dictable):
-   learning_rate = 2**-13
-   batch_size = 128
    dataset = "datasets/shakespear.txt"
+   learning_rate = 2**-12
+   batch_size = 128
    split = 0.9
-   test_every = 50
+   test_every = 5
    save_every = 500
-   gen_every  = 500
+   gen_every  = 50
    gen_count  = 512
 
 class Config:
    model_params = ModelParams
    train = Train
    save_name = "model_{0}.safetensor"
+   timestep_delta = 100
