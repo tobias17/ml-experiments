@@ -175,16 +175,6 @@ def train():
       else:
          step += 1
 
-      if step % Config.train.gen_every == 0:
-         g_time = time.time()
-         text = generate(Config.train.gen_count, use_trange=True, model=model)
-         gen_folder = f"{weights_folder}/gens"
-         if not os.path.exists(gen_folder):
-            os.makedirs(gen_folder)
-         with open(f"{gen_folder}/text_{step}.txt", "w") as f:
-            f.write(text)
-         s_time += (time.time() - g_time)
-
       if step % Config.train.save_every == 0:
          if not os.path.exists(weights_folder):
             os.makedirs(weights_folder)
@@ -196,12 +186,22 @@ def train():
          if not os.path.exists(main_filepath):
             shutil.copyfile(__file__, main_filepath)
 
-def generate(count=20, timestep_reduce=100, use_trange=True, model=None, start="\n"):
+      if step % Config.train.gen_every == 0:
+         g_time = time.time()
+         text = generate(Config.train.gen_count, use_trange=True, model=model)
+         gen_folder = f"{weights_folder}/gens"
+         if not os.path.exists(gen_folder):
+            os.makedirs(gen_folder)
+         with open(f"{gen_folder}/text_{step}.txt", "w") as f:
+            f.write(text)
+         s_time += (time.time() - g_time)
+
+def generate(count=20, timestep_reduce=100, use_trange=True, model=None, start="\n", archive=False):
    load_train_test()
    all_alphas = make_alphas()
    if model is None:
       model = Transformer(**Config.model_params.to_dict())
-      root = f"weights/{os.path.basename(os.path.dirname(__file__))}"
+      root = f"weights/{os.path.basename(os.path.dirname(__file__))}" if not archive else f"archive/{os.path.basename(os.path.dirname(os.path.dirname(__file__)))}"
       last_folder = [f"{root}/{f}" for f in os.listdir(root)]
       last_folder = max([f for f in last_folder if os.path.isdir(f)], key=os.path.getmtime)
       last_weight = [f"{last_folder}/{f}" for f in os.listdir(last_folder) if f.startswith("model_")]
@@ -260,4 +260,4 @@ ANTONIO:
 """
 
 if __name__ == "__main__":
-   train()
+   print(generate(count=128, start=text, timestep_reduce=20))
