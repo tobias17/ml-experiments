@@ -17,9 +17,9 @@ class Train(Dictable):
    learning_rate = 2**-12
    batch_size = 128
    split = 0.9
-   test_every = 5
+   test_every = 50
    save_every = 500
-   gen_every  = 50
+   gen_every  = 500
    gen_count  = 512
 
 class Config:

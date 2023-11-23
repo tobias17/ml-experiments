@@ -121,7 +121,7 @@ def train():
       max_diffuse = math.ceil(TS / Config.timestep_delta)
       diff_start_index  = np.random.randint(1, Config.model_params.max_context - max_diffuse - 1)
       diff_start_amount = np.random.randint(1, TS - 1) if test_index==0 else Config.timestep_delta - 1
-      diff_ladder_size  = 1 + math.floor((TS - diff_start_amount - 1) / Config.timestep_delta)
+      diff_ladder_size  = 2 + math.floor((TS - diff_start_amount - 1) / Config.timestep_delta)
 
       amnt = diff_start_index + diff_ladder_size
       X_tok = np.zeros((BS,CS))
@@ -130,7 +130,7 @@ def train():
       alphas = np.ones((BS,CS), dtype=np.float32)
       timesteps = np.zeros((BS,CS), dtype=np.float32)
       for i in range(diff_ladder_size):
-         ts = diff_start_amount + i*Config.timestep_delta
+         ts = min(diff_start_amount + i*Config.timestep_delta, TS-1)
          alphas[:,diff_start_index+i] = all_alphas[int(ts)]
          timesteps[:,diff_start_index+i] = ts
       alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(BS,CS,1)
@@ -173,7 +173,7 @@ def train():
 
       if step % Config.train.gen_every == 0:
          g_time = time.time()
-         text = generate(Config.train.gen_count, False, True, model)
+         text = generate(Config.train.gen_count, use_trange=True, model=model)
          gen_folder = f"{weights_folder}/gens"
          if not os.path.exists(gen_folder):
             os.makedirs(gen_folder)
@@ -189,8 +189,9 @@ def train():
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
 
-def generate(count=20, print_output=True, use_trange=False, model=None):
+def generate(count=20, timestep_reduce=100, use_trange=False, model=None):
    load_train_test()
+   all_alphas = make_alphas()
    if model is None:
       model = Transformer(**Config.model_params.to_dict())
       root = f"weights/{os.path.basename(os.path.dirname(__file__))}"
@@ -201,33 +202,45 @@ def generate(count=20, print_output=True, use_trange=False, model=None):
       print(f"Using {last_weight}")
       load_state_dict(model, safe_load(last_weight))
 
-   CONTEXT = Config.model_params.max_context
-   output = ""
-   all_output = ""
+   BS = 1
+   CS = Config.model_params.max_context
+   TS = Config.model_params.timesteps
+   all_output = "\n"
 
-   X = Tensor(encode("\n"), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CONTEXT-1)) )
+   x_0 = model.make_x_0_from(Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-1)) ))
+   diff_start_index = 1
+   diff_start_amount = Config.model_params.timesteps - 1
+
    for i in (trange(count) if use_trange else range(count)):
-      assert X.shape == (1,CONTEXT,)
-      pull_i = min(i, CONTEXT-1)
-      pred = model(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
-      char = decode([pred.numpy().item()])[0]
-      if char == "\n":
-         if print_output: print(output)
-         output = ""
-      else:
-         output += char
-      all_output += char
 
-      X_np = np.zeros((1,CONTEXT+1))
-      X_np[:,:-1] = X.numpy()
-      if i + 1 < CONTEXT:
-         X_np[:,i+1:i+2] = pred.numpy()
-         X = Tensor(X_np[:,:-1], dtype=dtypes.float32, requires_grad=False)
-      else:
-         X_np[:,-1:] = pred.numpy()
-         X = Tensor(X_np[:,1:], dtype=dtypes.float32, requires_grad=False)
-   
-   if print_output and output: print(output)
+      diff_ladder_size = 2 + math.floor((TS - diff_start_amount - 1) / Config.timestep_delta)
+      while diff_start_index + diff_ladder_size > CS:
+         amnt = (diff_start_index + diff_ladder_size) - CS
+         x_0_np = x_0.shrink( ((0,BS), (amnt,CS), (0,x_0.shape[2])) ).pad( ((0,0), (0,amnt), (0,0)) ).numpy()
+         del x_0
+         x_0 = Tensor(x_0_np, dtype=dtypes.float32, requires_grad=False)
+         diff_start_index -= 1
+
+      alphas = np.ones((BS,CS), dtype=np.float32)
+      timesteps = np.zeros((BS,CS), dtype=np.float32)
+      for i in range(diff_ladder_size):
+         ts = min(diff_start_amount + i*Config.timestep_delta, TS-1)
+         alphas[:,diff_start_index+i] = all_alphas[int(ts)]
+         timesteps[:,diff_start_index+i] = ts
+      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(BS,CS,1)
+
+      x_t = x_0*alphas + Tensor.randn(BS,CS,Config.model_params.latent_dim)*(1-alphas)
+      e_t = model(x_t, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False))
+      x_0 = Tensor((x_t - e_t).numpy(), requires_grad=False)
+
+      while diff_start_amount < timestep_reduce:
+         pred = model.estimate(x_0[:,diff_start_index:diff_start_index+1])
+         all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
+         del pred
+         diff_start_index += 1
+         diff_start_amount += Config.timestep_delta
+      diff_start_amount -= timestep_reduce
+
    return all_output
 
 if __name__ == "__main__":
