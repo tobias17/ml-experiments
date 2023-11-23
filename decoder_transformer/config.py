@@ -9,8 +9,8 @@ class ModelParams(Dictable):
    max_context = 256
 
 class Train(Dictable):
-   learning_rate = 2**-12
-   batch_size = 64
+   learning_rate = 2**-13
+   batch_size = 128
    dataset = "datasets/shakespear.txt"
    split = 0.9
    test_every = 50

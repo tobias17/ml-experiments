@@ -92,7 +92,7 @@ def train():
          data  = X_test
          np.random.seed(1337)
       
-      index = np.random.randint(0, len(data)-train_context, size=Config.train.batch_size)
+      index = np.random.randint(0, len(data)-train_context, size=BS)
 
       X = Tensor([data[i  :i+train_context  ] for i in index], dtype=dtypes.float32, requires_grad=False).reshape(BS,-1)
       Y = Tensor([data[i+1:i+train_context+1] for i in index], dtype=dtypes.float32).reshape(BS,-1)
@@ -124,12 +124,14 @@ def train():
          step += 1
 
       if step % Config.train.gen_every == 0:
+         g_time = time.time()
          text = generate(Config.train.gen_count, False, True, model)
          gen_folder = f"{weights_folder}/gens"
          if not os.path.exists(gen_folder):
             os.makedirs(gen_folder)
          with open(f"{gen_folder}/text_{step}.txt", "w") as f:
             f.write(text)
+         s_time += (time.time() - g_time)
 
       if step % Config.train.save_every == 0:
          if not os.path.exists(weights_folder):
