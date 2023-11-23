@@ -18,8 +18,8 @@ class Train(Dictable):
    batch_size = 128
    split = 0.9
    test_every = 50
-   save_every = 500
-   gen_every  = 500
+   save_every = 1000
+   gen_every  = 1000
    gen_count  = 512
 
 class Config:

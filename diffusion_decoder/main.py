@@ -159,9 +159,8 @@ def train():
       if (step+1) % Config.train.test_every == 0:
          if test_index == 2:
             step += 1
-            te = Config.train.test_every
             tc = 4
-            print(f"Step {str(step): >5} | Train Loss: {sum(train_loss[-te:])/te:.4f} | Train Accuracy: {100.0*sum(sum(train_accs[i][-te:]) for i in range(tc))/(te*tc):.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*sum(test_accs[i][-1] for i in range(tc))/tc:.2f}% | {(time.time() - s_time) / float(te):.2f} sec/iter")
+            print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {100.0*sum(train_accs[i][-1] for i in range(tc))/tc:.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*sum(test_accs[i][-1] for i in range(tc))/tc:.2f}% | {(time.time() - s_time) / float(Config.train.test_every):.2f} sec/iter")
             write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png")
             write_graph(train_accs, test_accs, f"{weights_folder}/graph_acc.png", ylim=(0,1), segmented=True)
             s_time = time.time()
@@ -189,7 +188,7 @@ def train():
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
 
-def generate(count=20, timestep_reduce=100, use_trange=False, model=None):
+def generate(count=20, timestep_reduce=100, use_trange=True, model=None, start="\n"):
    load_train_test()
    all_alphas = make_alphas()
    if model is None:
@@ -205,9 +204,9 @@ def generate(count=20, timestep_reduce=100, use_trange=False, model=None):
    BS = 1
    CS = Config.model_params.max_context
    TS = Config.model_params.timesteps
-   all_output = "\n"
+   all_output = start
 
-   x_0 = model.make_x_0_from(Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-1)) ))
+   x_0 = model.make_x_0_from(Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-len(all_output))) ))
    diff_start_index = 1
    diff_start_amount = Config.model_params.timesteps - 1
 
@@ -231,7 +230,10 @@ def generate(count=20, timestep_reduce=100, use_trange=False, model=None):
 
       x_t = x_0*alphas + Tensor.randn(BS,CS,Config.model_params.latent_dim)*(1-alphas)
       e_t = model(x_t, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False))
-      x_0 = Tensor((x_t - e_t).numpy(), requires_grad=False)
+      x_0_np = x_0.numpy()
+      del x_0
+      x_0_np[:,diff_start_index:diff_start_index+diff_ladder_size] = (x_t[:,diff_start_index:diff_start_index+diff_ladder_size] - e_t[:,diff_start_index:diff_start_index+diff_ladder_size]).numpy()
+      x_0 = Tensor(x_0_np, requires_grad=False)
 
       while diff_start_amount < timestep_reduce:
          pred = model.estimate(x_0[:,diff_start_index:diff_start_index+1])
@@ -243,5 +245,11 @@ def generate(count=20, timestep_reduce=100, use_trange=False, model=None):
 
    return all_output
 
+text = """SEBASTIAN:
+Bate, I beseech you, widow Dido.
+
+ANTONIO:
+"""
+
 if __name__ == "__main__":
-   train()
+   print(generate(count=128, start=text))

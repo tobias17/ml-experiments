@@ -1,7 +1,12 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+from enum import Enum, auto
 from typing import Dict
+
+class Schedules(Enum):
+   LINEAR = auto()
+   SQRT   = auto()
 
 class Dictable:
    @classmethod
