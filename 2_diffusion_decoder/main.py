@@ -260,4 +260,5 @@ ANTONIO:
 """
 
 if __name__ == "__main__":
-   print(generate(count=128, start=text, timestep_reduce=20))
+   train()
+   # print(generate(count=128, start=text, timestep_reduce=20))

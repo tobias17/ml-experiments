@@ -3,7 +3,7 @@ from util import Dictable, Schedules
 class ModelParams(Dictable):
    timesteps   = 400
    vocab_size  = 65
-   n_layers    = 4
+   n_layers    = 8
    embed_dim   = 256
    latent_dim  = 192
    timepos_dim = 64
@@ -15,7 +15,7 @@ class ModelParams(Dictable):
 class Train(Dictable):
    dataset = "datasets/shakespear.txt"
    learning_rate = 2**-12
-   batch_size = 128
+   batch_size = 64
    split = 0.9
    test_every = 50
    save_every = 1000
