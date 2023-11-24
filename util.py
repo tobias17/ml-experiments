@@ -14,7 +14,7 @@ class Dictable:
       diff = set(dir(cls)) - set(dir(Dictable))
       return { k: getattr(cls, k) for k in diff }
 
-def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=False):
+def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=False, delta=1, offset=0):
    if not os.path.exists( (parent:=os.path.dirname(save_dirpath)) ):
       os.makedirs(parent)
 
@@ -22,12 +22,12 @@ def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=Fa
 
    if not segmented:
       scale = len(train_data) // len(test_data)
-      entries.append([np.arange(0, len(train_data)), train_data, 'train'])
-      entries.append([np.arange(scale-1, len(train_data), scale), test_data, 'test'])
+      entries.append([np.arange(0, len(train_data))*delta+delta+offset, train_data, 'train'])
+      entries.append([np.arange(scale-1, len(train_data), scale)*delta+delta+offset, test_data, 'test'])
    else:
       for data, label in [(train_data, 'train'), (test_data, 'test')]:
          for i, d in enumerate(data):
-            entries.append([np.arange(len(d)), d, f"{label}_{i}"])
+            entries.append([np.arange(0, len(d))*delta+delta+offset, d, f"{label}_{i}"])
 
    plt.clf()
    for x, y, label in entries:
