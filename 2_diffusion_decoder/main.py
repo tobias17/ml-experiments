@@ -166,8 +166,8 @@ def train():
             step += 1
             tc = 4
             print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {100.0*sum(train_accs[i][-1] for i in range(tc))/tc:.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*sum(test_accs[i][-1] for i in range(tc))/tc:.2f}% | {(time.time() - s_time) / float(Config.train.test_every):.2f} sec/iter")
-            write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png", delta=Config.train.test_every, offset=500)
-            write_graph(train_accs, test_accs, f"{weights_folder}/graph_acc.png", ylim=(0,1), segmented=True, delta=Config.train.test_every, offset=500)
+            write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png", delta=Config.train.test_every)
+            write_graph(train_accs, test_accs, f"{weights_folder}/graph_acc.png", ylim=(0,1), segmented=True, delta=Config.train.test_every)
             s_time = time.time()
             test_index = 0
          else:
