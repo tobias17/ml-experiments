@@ -246,6 +246,7 @@ def generate(count=20, timestep_reduce=100, use_trange=True, model=None, start="
       while diff_start_amount < timestep_reduce:
          pred = model.estimate(x_0[:,diff_start_index:diff_start_index+1])
          all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
+         x_0[:,diff_start_index:diff_start_index+1] = model.make_x_0_from(pred.argmax(axis=-1).reshape(1,1))
          del pred
          diff_start_index += 1
          diff_start_amount += Config.timestep_delta
