@@ -265,8 +265,7 @@ def train(phase:int, sigma:float=0.01):
          x_t = x_0*alphas + ((1-alphas)*Tensor.randn(*x_0.shape)).detach()
 
          e_t = den_model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
-         pred_x_0 = x_t - e_t
-         output = den_model.estimate(pred_x_0)
+         output = den_model.estimate(x_t - e_t)
 
       loss = output.sparse_categorical_crossentropy(Y)
 
@@ -372,7 +371,8 @@ def generate_ctx(count=20, ctx_model=None, start=text, archive=False):
    del X
    return all_output
 
-def generate_den(count=20, timestep_reduce=25, ctx_model=None, den_model=None, start=text, archive=False):
+def generate_den(count=20, timestep_reduce=25, ctx_model=None, den_model=None, pre_condition=False, start=text, archive=False):
+   global encode, decode
    load_train_test()
    all_alphas = make_alphas()
    if ctx_model is None:
@@ -389,17 +389,29 @@ def generate_den(count=20, timestep_reduce=25, ctx_model=None, den_model=None, s
    TD = Config.den_model_params.time_deltas
    all_output = start
 
-   def make_context(toks):
+   def make_context(toks, start_i):
       if len(toks) > CS:
          toks = toks[-CS:]
       data = np.zeros((CS,))-1
-      data[:len(toks)] = np.array(encode(toks))
-      data_i = len(toks)       
+      data[:start_i] = np.array(encode(toks[:start_i]))
+      data_i = start_i
       context = ctx_model.make_context_from(Tensor(data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
       return context, data_i
-   context, data_i = make_context(all_output)
-   x_0 = Tensor.randn(BS,1,DS,Config.den_model_params.latent_dim)
-   den_start_amount = TS - 1
+   
+   def make_x_0(toks, start_i: int):
+      assert start_i < len(toks)
+      start_data = np.array(encode(toks[start_i:])) # type: ignore
+      print(f"Making x_0 from |{toks[start_i:]}|")
+      return den_model.make_x_0_from(Tensor(start_data, dtype=dtypes.float32, requires_grad=False).reshape(BS,1,-1))
+
+   start_i = len(all_output) - (DS if pre_condition else 0)
+   if pre_condition:
+      x_0 = make_x_0(all_output, start_i)
+      den_start_amount = timestep_reduce
+   else:
+      x_0 = Tensor.zeros(BS,1,DS,Config.den_model_params.latent_dim)
+      den_start_amount = TS - 1
+   context, data_i = make_context(all_output, start_i)
 
    for i in trange(count):
 
@@ -414,21 +426,29 @@ def generate_den(count=20, timestep_reduce=25, ctx_model=None, den_model=None, s
 
       x_t = x_0*alphas + Tensor.randn(BS,1,Config.den_model_params.latent_dim)*(1-alphas)
       e_t = den_model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
-      x_0 = (x_t - e_t).realize().detach()
+      pred_x_0 = x_t - e_t
 
-      while den_start_amount < timestep_reduce:
-         pred = den_model.estimate(x_0)[0,0,0,:]
-         all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
-         context, data_i = make_context(all_output)
+      while den_start_amount <= timestep_reduce:
+         if start_i >= len(all_output):
+            pred = den_model.estimate(pred_x_0)[0,0,0,:]
+            all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
+         start_i += 1
+         context, data_i = make_context(all_output, start_i)
+         pred_x_0 = pred_x_0[:,:,1:].cat(Tensor.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
          den_start_amount += TD
       den_start_amount -= timestep_reduce
+
+      if start_i < len(all_output):
+         pred_x_0[:,:,:len(all_output)-start_i] = make_x_0(all_output, start_i)
+
+      x_0 = pred_x_0.realize().detach()
 
    return all_output
 
 if __name__ == "__main__":
-   train(phase=1)
+   # train(phase=1)
    # print(generate_ctx(count=512))
 
    # train(phase=2)
    # train(phase=3)
-   # print(generate(count=512, timestep_reduce=50))
+   print(generate_den(count=128))
