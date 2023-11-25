@@ -122,9 +122,9 @@ class DenTransformer:
       den_timepos = self.time_embed(timesteps.reshape(1,timesteps.shape[0])) + self.pos_embed(Tensor.arange(0, timesteps.shape[0], requires_grad=False).reshape((1,-1)))
       den_latent = den_latent.cat(den_timepos.reshape((1,1,*den_timepos.shape[-2:])).expand((*den_latent.shape[:2],*den_timepos.shape[-2:])), dim=-1)
 
+      ctx_latent = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:])).expand((ctx_latent.shape[0],den_latent.shape[1],*ctx_latent.shape[1:])).reshape((-1,*ctx_latent.shape[1:]))
       orig_den_shape = den_latent.shape
       den_latent = den_latent.reshape((-1,*den_latent.shape[-2:]))
-      ctx_latent = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:])).expand((ctx_latent.shape[0],den_latent.shape[1],*ctx_latent.shape[1:])).reshape((-1,*ctx_latent.shape[1:]))
 
       for layer in self.layers:
          den_latent = layer(den_latent, ctx_latent, attn_mask)
@@ -193,6 +193,13 @@ def train(phase:int):
       weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
    else:
       weights_folder = get_latest_folder()
+      if len([f for f in os.listdir(weights_folder) if f.startswith(f"p{phase}_")]):
+         while True:
+            text = input("Files already detected for this phase, continue? [y/n]: ")
+            if text.lower().startswith("y"):
+               break
+            elif text.lower().startswith("q"):
+               raise RuntimeError("Avoiding overwriting previous run")
 
    if phase == 2 or phase == 3:
       load_latest_weight(ctx_model, "ctx", phase=1)
@@ -229,12 +236,6 @@ def train(phase:int):
       data = X_train if test_index <= 1 else X_test
       
       index = np.random.randint(0, len(data)-CS-DS, size=BS)
-      diff_start_amount = np.random.randint(1, TS - 1) if test_index==0 else Config.den_model_params.time_deltas // 2
-      if test_index == 0:
-         if np.random.randint(0,2) == 0:
-            diff_start_amount = TS - 1
-      else:
-         diff_start_amount = TS - 1
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
       context = ctx_model.make_context_from(Tensor(X_tok, dtype=dtypes.float32, requires_grad=False))
@@ -247,10 +248,12 @@ def train(phase:int):
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
+         diff_start_amount = np.random.randint(1, TS - 1) if test_index==0 else Config.den_model_params.time_deltas // 2
+
          alphas = np.ones((DS,), dtype=np.float32)
          timesteps = np.zeros((DS,), dtype=np.float32)
          for i in range(DS):
-            ts = min(diff_start_amount + i*Config.den_model_params.time_deltas, TS-1)
+            ts = min(diff_start_amount + i*Config.den_model_params.time_deltas, TS - 1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
          alphas_np = alphas
@@ -277,12 +280,11 @@ def train(phase:int):
          
          if phase == 1:
             acc_l = test_acc if test_index==2 else train_acc
-            for i in range(DS):
-               acc_l.append((output.argmax(axis=-1)==Y).mean().numpy().item())
+            acc_l.append((output.argmax(axis=-1)==Y).mean().numpy().item())
          else:
             accs_l = test_accs if test_index==2 else train_accs
             for i in range(DS):
-               accs_l[i].append((output[:,i:i+1].argmax(axis=-1)==Y[:,i:i+1]).mean().numpy().item())
+               accs_l[i].append((output[:,:,i:i+1].argmax(axis=-1)==Y[:,:,i:i+1]).mean().numpy().item())
 
       TE = Config.train[phase].test_every
       if (step+1) % TE == 0:
@@ -295,7 +297,7 @@ def train(phase:int):
             print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {train_acc_str}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {test_acc_str}% | {(time.time() - s_time) / float(TE):.2f} sec/iter")
             write_graph(train_loss, test_loss, f"{weights_folder}/p{phase}_graph_loss.png", delta=TE)
             if phase == 1:
-               write_graph(train_acc,  test_acc,  f"{weights_folder}/graph_acc.png", ylim=(0,1), delta=TE)
+               write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=TE)
             else:
                write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=TE)
             s_time = time.time()
@@ -351,7 +353,8 @@ def generate_ctx(count=20, ctx_model=None, start=text, archive=False):
    for i in trange(count):
       assert X.shape == (1,CS,)
       pull_i = min(i, CS-1)
-      pred = ctx_model(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
+      context = ctx_model.make_context_from(X.realize())
+      pred = ctx_model.estimate(context)[:,pull_i:pull_i+1].argmax(axis=-1)
       char = decode([pred.numpy().item()])[0]
       all_output += char
 
@@ -421,4 +424,7 @@ def generate_den(count=20, timestep_reduce=25, ctx_model=None, den_model=None, s
 
 if __name__ == "__main__":
    train(phase=1)
+   # print(generate_ctx(count=512))
+
+   # train(phase=2)
    # print(generate(count=512, timestep_reduce=50))

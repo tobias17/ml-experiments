@@ -40,7 +40,10 @@ class Phase1Train(Train):
    gen_every  = 500
 
 class Phase2Train(Train):
-   pass
+   batch_size = 6
+   test_every = 5
+   save_every = 1000
+   gen_every  = 1000
 
 class Phase3Train(Train):
    pass
