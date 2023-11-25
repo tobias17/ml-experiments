@@ -34,4 +34,6 @@ def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=Fa
       plt.plot(x, y, label=label)
    plt.ylim(ylim)
    plt.legend()
-   plt.savefig(save_dirpath)
+   figure = plt.gcf()
+   figure.set_size_inches(18/1.5, 10/1.5)
+   plt.savefig(save_dirpath, dpi=100)

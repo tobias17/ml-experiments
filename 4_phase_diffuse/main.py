@@ -182,7 +182,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
    print(f"Using {last_weight}")
    load_state_dict(model, safe_load(last_weight))
 
-def train(phase:int):
+def train(phase:int, sigma:float=0.01):
    assert phase in (options:=[1,2,3]), f"phase was {phase}, must be in {options}"
 
    ctx_model = CtxTransformer(**Config.ctx_model_params.to_dict())
@@ -198,7 +198,7 @@ def train(phase:int):
             text = input("Files already detected for this phase, continue? [y/n]: ")
             if text.lower().startswith("y"):
                break
-            elif text.lower().startswith("q"):
+            elif text.lower().startswith("n"):
                raise RuntimeError("Avoiding overwriting previous run")
 
    if phase == 2 or phase == 3:
@@ -249,6 +249,7 @@ def train(phase:int):
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
          diff_start_amount = np.random.randint(1, TS - 1) if test_index==0 else Config.den_model_params.time_deltas // 2
+         diff_start_amount = Config.den_model_params.time_deltas // 2
 
          alphas = np.ones((DS,), dtype=np.float32)
          timesteps = np.zeros((DS,), dtype=np.float32)
@@ -256,7 +257,7 @@ def train(phase:int):
             ts = min(diff_start_amount + i*Config.den_model_params.time_deltas, TS - 1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
-         alphas_np = alphas
+         alphas = (1 - ((1 - alphas) * (1+np.abs((sigma*np.random.randn(*alphas.shape)))))).clip(0, 1)
          alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,Config.den_model_params.latent_dim)
 
          attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS).reshape(-1,DS,CS)
@@ -347,9 +348,9 @@ def generate_ctx(count=20, ctx_model=None, start=text, archive=False):
       load_latest_weight(ctx_model, "ctx", archive)
 
    CS = Config.ctx_model_params.pos_size
-   all_output = ""
+   all_output = start
 
-   X = Tensor(encode("\n"), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-1)) )
+   X = Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-len(all_output))) )
    for i in trange(count):
       assert X.shape == (1,CS,)
       pull_i = min(i, CS-1)
@@ -366,7 +367,9 @@ def generate_ctx(count=20, ctx_model=None, start=text, archive=False):
       else:
          X_np[:,-1:] = pred.numpy()
          X = Tensor(X_np[:,1:], dtype=dtypes.float32, requires_grad=False)
+      del context, pred
    
+   del X
    return all_output
 
 def generate_den(count=20, timestep_reduce=25, ctx_model=None, den_model=None, start=text, archive=False):
@@ -427,4 +430,5 @@ if __name__ == "__main__":
    # print(generate_ctx(count=512))
 
    # train(phase=2)
+   # train(phase=3)
    # print(generate(count=512, timestep_reduce=50))
