@@ -15,8 +15,12 @@ def scaled_dot_product_attention(self:Tensor, key:Tensor, value:Tensor, attn_mas
    assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
    if is_causal: attn_mask = Tensor.ones(self.shape[-2], key.shape[-2], requires_grad=False, device=self.device).tril(0).cast(dtypes.bool)
    if attn_mask is not None and attn_mask.dtype == dtypes.bool: attn_mask = (attn_mask == 0).where(-float("inf"), attn_mask)
-   a = self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1])
-   b = a + attn_mask
+   # if not is_causal and attn_mask is not None:
+   #    print("\n\nBefore attention mask")
+   #    print((self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1])).numpy())
+   #    print("\n\nAfter attention mask")
+   #    print((self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).numpy())
+   #    z = 0
    return (self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).softmax(-1).dropout(dropout_p) @ value
 
 class CrossAttention:
@@ -113,9 +117,16 @@ class Transformer:
       for ctx_block, den_block in self.layers:
          ctx_latent = ctx_block(ctx_latent)
          a = den_latent.reshape((-1,*den_latent.shape[-2:]))
+         # z1 = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:]))
+         # z2 = z1.expand((ctx_latent.shape[0],den_latent.shape[1],*ctx_latent.shape[1:]))
+         # n1 = Tensor.ones(z2.shape[1], z2.shape[1]).tril().cast(dtypes.bool)
+         # n2 = (n1 == 0).where(float("inf"), 0)
+         # n3 = n2.reshape(1,*n1.shape,1)
+         # n4 = n3.expand(z2.shape)
+         # z3 = z2 + n4
+         # b = z2.reshape((-1,*ctx_latent.shape[1:]))
          b = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:])).expand((ctx_latent.shape[0],den_latent.shape[1],*ctx_latent.shape[1:])).reshape((-1,*ctx_latent.shape[1:]))
-         c = attn_mask
-         d = den_block(a, b, c)
+         d = den_block(a, b, attn_mask)
          e = d.reshape(den_latent.shape)
          den_latent = e
 
@@ -175,14 +186,19 @@ def train():
    train_loss, test_loss = [], []
    train_accs, test_accs = [[] for _ in range(DS)], [[] for _ in range(DS)]
    while True:
-      np.random.seed(step if test_index == 0 else 1337)
+      np.random.seed(step if test_index < 2 else 1337)
       data = X_train if test_index <= 1 else X_test
       
       index = np.random.randint(0, len(data)-CS-DS, size=BS)
       diff_start_amount = np.random.randint(1, TS - 1) if test_index==0 else Config.model_params.time_deltas // 2
+      if test_index == 0:
+         if np.random.randint(0,2) == 0:
+            diff_start_amount = TS - 1
+      else:
+         diff_start_amount = TS - 1
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
-      Y_tok = np.array([[data[i+j:i+j+DS] for j in range(CS)] for i in index], dtype=np.float32)
+      Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
       Y = Tensor(Y_tok, dtype=dtypes.float32)
 
       alphas = np.ones((DS,), dtype=np.float32)
@@ -191,15 +207,15 @@ def train():
          ts = min(diff_start_amount + i*Config.model_params.time_deltas, TS-1)
          alphas[i] = all_alphas[int(ts)]
          timesteps[i] = ts
-      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,1)
+      alphas_np = alphas
+      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.latent_dim)
 
       attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS).reshape(-1,DS,CS)
       context = model.make_context_from(Tensor(X_tok, dtype=dtypes.float32, requires_grad=False))
       x_0 = model.make_x_0_from(Y.detach())
       x_t = x_0*alphas + ((1-alphas)*Tensor.randn(*x_0.shape)).detach()
 
-      e_t = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
-      pred_x_0 = x_t - e_t
+      pred_x_0 = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
       output = model.estimate(pred_x_0)
       loss = output.sparse_categorical_crossentropy(Y)
 
@@ -287,13 +303,6 @@ def generate(count=20, timestep_reduce=25, use_trange=True, model=None, start=te
 
    for i in (trange(count) if use_trange else range(count)):
 
-      # while diff_start_index + diff_ladder_size > CS:
-      #    amnt = (diff_start_index + diff_ladder_size) - CS
-      #    x_0_np = x_0.shrink( ((0,BS), (amnt,CS), (0,x_0.shape[2])) ).pad( ((0,0), (0,amnt), (0,0)) ).numpy()
-      #    del x_0
-      #    x_0 = Tensor(x_0_np, dtype=dtypes.float32, requires_grad=False)
-      #    diff_start_index -= 1
-
       alphas = np.ones((DS,), dtype=np.float32)
       timesteps = np.zeros((DS,), dtype=np.float32)
       for i in range(DS):
@@ -304,8 +313,8 @@ def generate(count=20, timestep_reduce=25, use_trange=True, model=None, start=te
       attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:].reshape(-1,DS,CS)
 
       x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.latent_dim)*(1-alphas)
-      e_t = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
-      x_0 = (x_t - e_t).realize().detach()
+      pred_x_0 = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+      x_0 = pred_x_0.realize().detach()
 
       while diff_start_amount < timestep_reduce:
          pred = model.estimate(x_0)[0,0,0,:]
