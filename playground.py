@@ -48,6 +48,7 @@ def test_batch_causal_masks():
 
    Tensor.manual_seed(1337)
 
+   BS = 2
    dim = 8
    ctx = 5
    den = 3
@@ -55,9 +56,9 @@ def test_batch_causal_masks():
 
    ca = CrossAttention(dim, dim, 2, dim//2)
 
-   context = Tensor.arange(ctx*dim).reshape(1,ctx,dim)
-   inputs  = Tensor.ones(ctx,den,dim)
-   attn_mask = to_b(Tensor.ones(ctx,ctx).tril(0)).reshape(ctx,1,ctx).expand(ctx,den,ctx)
+   context = Tensor.arange(ctx*dim).reshape(1,1,ctx,dim).expand(BS,ctx,ctx,dim).reshape(-1,ctx,dim)
+   inputs  = Tensor.ones(BS,ctx,den,dim).reshape(-1,den,dim)
+   attn_mask = to_b(Tensor.ones(ctx,ctx).tril(0)).reshape(1,ctx,1,ctx).expand(BS,ctx,den,ctx).reshape(-1,den,ctx)
    print("\nOriginal attention mask")
    print(attn_mask.shape)
    print(attn_mask.numpy())

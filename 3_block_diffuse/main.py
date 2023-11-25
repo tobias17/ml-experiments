@@ -30,15 +30,10 @@ class CrossAttention:
       self.dropout = dropout
       self.is_causal = is_causal
    def __call__(self, x:Tensor, context:Optional[Tensor]=None, attn_mask:Optional[Tensor]=None) -> Tensor:
-      if attn_mask is not None:
-         z = 0
-      # if context is not None:
-      #    a = context.reshape((context.shape[0],1,*context.shape[1:]))
-      #    b = a.expand(context.shape[0],x.shape[-3],*context.shape[1:])
-      context = x if context is None else context.reshape((context.shape[0],1,*context.shape[1:])).expand(context.shape[0],x.shape[-3],*context.shape[1:])
+      context = x if context is None else context
       q,k,v = self.to_q(x), self.to_k(context), self.to_v(context)
       q,k,v = [y.reshape(*x.shape[0:-2], -1, self.num_heads, self.head_size).transpose(-3,-2) for y in (q,k,v)]
-      q,k,v = [y.reshape((-1,*y.shape[-3:])) for y in (q,k,v)]
+      if attn_mask is not None: attn_mask = attn_mask.reshape(attn_mask.shape[0], 1, *attn_mask.shape[1:]).expand((attn_mask.shape[0], self.num_heads, *attn_mask.shape[1:]))
       attention = scaled_dot_product_attention(q, k, v, is_causal=self.is_causal, attn_mask=attn_mask).dropout(self.dropout).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
       return h_.sequential(self.to_out)
@@ -117,7 +112,12 @@ class Transformer:
 
       for ctx_block, den_block in self.layers:
          ctx_latent = ctx_block(ctx_latent)
-         den_latent = den_block(den_latent, ctx_latent, attn_mask)
+         a = den_latent.reshape((-1,*den_latent.shape[-2:]))
+         b = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:])).expand((ctx_latent.shape[0],ctx_latent.shape[1],*ctx_latent.shape[1:])).reshape((-1,*ctx_latent.shape[1:]))
+         c = attn_mask
+         d = den_block(a, b, c)
+         e = d
+         den_latent = e
 
       B,T,C = den_latent.shape
       assert C > self.latent_dim
@@ -173,7 +173,7 @@ def train():
    s_time = time.time()
    step, test_index = 0, 0
    train_loss, test_loss = [], []
-   train_accs, test_accs = [[] for _ in range(4)], [[] for _ in range(4)]
+   train_accs, test_accs = [[] for _ in range(DS)], [[] for _ in range(DS)]
    while True:
       np.random.seed(step if test_index == 0 else 1337)
       data = X_train if test_index <= 1 else X_test
@@ -183,6 +183,7 @@ def train():
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
       Y_tok = np.array([[data[i+j:i+j+DS] for j in range(CS)] for i in index], dtype=np.float32)
+      Y = Tensor(Y_tok, dtype=dtypes.float32)
 
       alphas = np.ones((DS,), dtype=np.float32)
       timesteps = np.zeros((DS,), dtype=np.float32)
@@ -192,16 +193,14 @@ def train():
          timesteps[i] = ts
       alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,1)
 
-      att_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(CS,1,CS).expand(CS,DS,CS)
+      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS).reshape(-1,DS,CS)
       context = model.make_context_from(Tensor(X_tok, dtype=dtypes.float32, requires_grad=False))
-      x_0 = model.make_x_0_from(Tensor(Y_tok, dtype=dtypes.float32, requires_grad=False))
+      x_0 = model.make_x_0_from(Y.detach())
       x_t = x_0*alphas + ((1-alphas)*Tensor.randn(*x_0.shape)).detach()
 
-      e_t = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), att_mask)
-      pred_x_0 = x_t[:,diff_start_index:diff_start_index+diff_ladder_size] - e_t[:,diff_start_index:diff_start_index+diff_ladder_size]
+      e_t = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+      pred_x_0 = x_t - e_t
       output = model.estimate(pred_x_0)
-
-      Y = Tensor([data[i+diff_start_index:i+amnt] for i in index], dtype=dtypes.float32).reshape(BS,-1)
       loss = output.sparse_categorical_crossentropy(Y)
 
       if test_index == 0:
@@ -212,14 +211,13 @@ def train():
       else:
          loss_l, accs_l = (test_loss, test_accs) if test_index==2 else (train_loss, train_accs)
          loss_l.append(loss.numpy().item())
-         for i in range(4):
+         for i in range(DS):
             accs_l[i].append((output[:,i:i+1].argmax(axis=-1)==Y[:,i:i+1]).mean().numpy().item())
 
       if (step+1) % Config.train.test_every == 0:
          if test_index == 2:
             step += 1
-            tc = 4
-            print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {100.0*sum(train_accs[i][-1] for i in range(tc))/tc:.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*sum(test_accs[i][-1] for i in range(tc))/tc:.2f}% | {(time.time() - s_time) / float(Config.train.test_every):.2f} sec/iter")
+            print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {100.0*sum(train_accs[i][-1] for i in range(DS))/DS:.2f}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {100.0*sum(test_accs[i][-1] for i in range(DS))/DS:.2f}% | {(time.time() - s_time) / float(Config.train.test_every):.2f} sec/iter")
             write_graph(train_loss, test_loss, f"{weights_folder}/graph_loss.png", delta=Config.train.test_every)
             write_graph(train_accs, test_accs, f"{weights_folder}/graph_acc.png", ylim=(0,1), segmented=True, delta=Config.train.test_every)
             s_time = time.time()
