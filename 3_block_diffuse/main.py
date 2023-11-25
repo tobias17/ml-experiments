@@ -113,15 +113,15 @@ class Transformer:
       for ctx_block, den_block in self.layers:
          ctx_latent = ctx_block(ctx_latent)
          a = den_latent.reshape((-1,*den_latent.shape[-2:]))
-         b = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:])).expand((ctx_latent.shape[0],ctx_latent.shape[1],*ctx_latent.shape[1:])).reshape((-1,*ctx_latent.shape[1:]))
+         b = ctx_latent.reshape((ctx_latent.shape[0],1,*ctx_latent.shape[1:])).expand((ctx_latent.shape[0],den_latent.shape[1],*ctx_latent.shape[1:])).reshape((-1,*ctx_latent.shape[1:]))
          c = attn_mask
          d = den_block(a, b, c)
-         e = d
+         e = d.reshape(den_latent.shape)
          den_latent = e
 
-      B,T,C = den_latent.shape
+      B,D,T,C = den_latent.shape
       assert C > self.latent_dim
-      return den_latent.shrink( ((0,B), (0,T), (0,self.latent_dim)) )
+      return den_latent.shrink( ((0,B), (0,D), (0,T), (0,self.latent_dim)) )
 
    def estimate(self, latent:Tensor) -> Tensor:
       return self.class_head(latent).log_softmax()
@@ -240,7 +240,7 @@ def train():
 
       if step % Config.train.gen_every == 0:
          g_time = time.time()
-         text = generate(Config.train.gen_count, use_trange=True, model=model)
+         text = generate(Config.train.gen_count, model=model)
          gen_folder = f"{weights_folder}/gens"
          if not os.path.exists(gen_folder):
             os.makedirs(gen_folder)
@@ -248,7 +248,13 @@ def train():
             f.write(text)
          s_time += (time.time() - g_time)
 
-def generate(count=20, timestep_reduce=25, use_trange=True, model=None, start="\n", archive=False):
+text = """SEBASTIAN:
+Bate, I beseech you, widow Dido.
+
+ANTONIO:
+"""
+
+def generate(count=20, timestep_reduce=25, use_trange=True, model=None, start=text, archive=False):
    load_train_test()
    all_alphas = make_alphas()
    if model is None:
@@ -262,55 +268,54 @@ def generate(count=20, timestep_reduce=25, use_trange=True, model=None, start="\
       load_state_dict(model, safe_load(last_weight))
 
    BS = 1
-   CS = Config.model_params.max_context
    TS = Config.model_params.timesteps
+   CS = Config.model_params.ctx_size
+   DS = Config.model_params.den_size
    all_output = start
 
-   x_0 = model.make_x_0_from(Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-len(all_output))) ))
-   diff_start_index = 1
+   def make_context(toks):
+      if len(toks) > CS:
+         toks = toks[-CS:]
+      data = np.zeros((CS,))-1
+      data[:len(toks)] = np.array(encode(toks))
+      data_i = len(toks)       
+      context = model.make_context_from(Tensor(data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
+      return context, data_i
+   context, data_i = make_context(all_output)
+   x_0 = Tensor.randn(BS,1,DS,Config.model_params.latent_dim)
    diff_start_amount = Config.model_params.timesteps - 1
 
    for i in (trange(count) if use_trange else range(count)):
 
-      diff_ladder_size = 2 + math.floor((TS - diff_start_amount - 1) / Config.timestep_delta)
-      while diff_start_index + diff_ladder_size > CS:
-         amnt = (diff_start_index + diff_ladder_size) - CS
-         x_0_np = x_0.shrink( ((0,BS), (amnt,CS), (0,x_0.shape[2])) ).pad( ((0,0), (0,amnt), (0,0)) ).numpy()
-         del x_0
-         x_0 = Tensor(x_0_np, dtype=dtypes.float32, requires_grad=False)
-         diff_start_index -= 1
+      # while diff_start_index + diff_ladder_size > CS:
+      #    amnt = (diff_start_index + diff_ladder_size) - CS
+      #    x_0_np = x_0.shrink( ((0,BS), (amnt,CS), (0,x_0.shape[2])) ).pad( ((0,0), (0,amnt), (0,0)) ).numpy()
+      #    del x_0
+      #    x_0 = Tensor(x_0_np, dtype=dtypes.float32, requires_grad=False)
+      #    diff_start_index -= 1
 
-      alphas = np.ones((BS,CS), dtype=np.float32)
-      timesteps = np.zeros((BS,CS), dtype=np.float32)
-      for i in range(diff_ladder_size):
-         ts = min(diff_start_amount + i*Config.timestep_delta, TS-1)
-         alphas[:,diff_start_index+i] = all_alphas[int(ts)]
-         timesteps[:,diff_start_index+i] = ts
-      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(BS,CS,1)
+      alphas = np.ones((DS,), dtype=np.float32)
+      timesteps = np.zeros((DS,), dtype=np.float32)
+      for i in range(DS):
+         ts = min(diff_start_amount + i*Config.model_params.time_deltas, TS-1)
+         alphas[i] = all_alphas[int(ts)]
+         timesteps[i] = ts
+      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1)
+      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:].reshape(-1,DS,CS)
 
-      x_t = x_0*alphas + Tensor.randn(BS,CS,Config.model_params.latent_dim)*(1-alphas)
-      e_t = model(x_t, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False))
-      x_0_np = x_0.numpy()
-      del x_0
-      x_0_np[:,diff_start_index:diff_start_index+diff_ladder_size] = (x_t[:,diff_start_index:diff_start_index+diff_ladder_size] - e_t[:,diff_start_index:diff_start_index+diff_ladder_size]).numpy()
-      x_0 = Tensor(x_0_np, requires_grad=False)
+      x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.latent_dim)*(1-alphas)
+      e_t = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+      x_0 = (x_t - e_t).realize().detach()
 
       while diff_start_amount < timestep_reduce:
-         pred = model.estimate(x_0[:,diff_start_index:diff_start_index+1])
+         pred = model.estimate(x_0)[0,0,0,:]
          all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
-         del pred
-         diff_start_index += 1
-         diff_start_amount += Config.timestep_delta
+         context, data_i = make_context(all_output)
+         diff_start_amount += Config.model_params.time_deltas
       diff_start_amount -= timestep_reduce
 
    return all_output
 
-text = """SEBASTIAN:
-Bate, I beseech you, widow Dido.
-
-ANTONIO:
-"""
-
 if __name__ == "__main__":
    train()
-   # print(generate(count=128, start=text, timestep_reduce=20))
+   # print(generate(count=512, timestep_reduce=50))

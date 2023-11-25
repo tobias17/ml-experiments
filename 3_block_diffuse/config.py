@@ -20,7 +20,7 @@ class ModelParams(Dictable):
 class Train(Dictable):
    dataset = "datasets/shakespear.txt"
    learning_rate = 2**-12
-   batch_size = 4
+   batch_size = 5
    split = 0.9
    test_every = 50
    save_every = 1000
