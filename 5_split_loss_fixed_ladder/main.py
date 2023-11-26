@@ -271,7 +271,8 @@ def train(phase:int, sigma:float=0.01):
 
          loss_1 = (pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape)
          loss_2 = den_model.estimate(x_0).sparse_categorical_crossentropy(Y)
-         loss = loss_1 + loss_2
+         loss_3 = output.sparse_categorical_crossentropy(Y)
+         loss = loss_1 + loss_2 + loss_3
 
       if test_index == 0:
          loss.realize()
