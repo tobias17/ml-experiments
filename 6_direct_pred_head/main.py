@@ -21,24 +21,41 @@ def scaled_dot_product_attention(self:Tensor, key:Tensor, value:Tensor, attn_mas
    #    print("\n\nAfter attention mask")
    #    print((self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).numpy())
    #    z = 0
+   if attn_mask is not None and not is_causal:
+      a = self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1])
+      b = a + attn_mask
    return (self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).softmax(-1).dropout(dropout_p) @ value
 
-class CrossAttention:
-   def __init__(self, query_dim, context_dim, n_heads, d_head, dropout=0.1, is_causal=False):
-      self.to_q = Linear(query_dim,   n_heads*d_head, bias=False)
-      self.to_k = Linear(context_dim, n_heads*d_head, bias=False)
-      self.to_v = Linear(context_dim, n_heads*d_head, bias=False)
+class SelfAttention:
+   def __init__(self, query_dim, n_heads, d_head, dropout=0.1, is_causal=False):
+      self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
+      self.to_k = Linear(query_dim, n_heads*d_head, bias=False)
+      self.to_v = Linear(query_dim, n_heads*d_head, bias=False)
       self.num_heads = n_heads
       self.head_size = d_head
       self.to_out = [Linear(n_heads*d_head, query_dim)]
       self.dropout = dropout
       self.is_causal = is_causal
-   def __call__(self, x:Tensor, context:Optional[Tensor]=None, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
-      context = x if context is None else context
-      fnx = lambda y: y.reshape(*x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2)
-      q,k,v = fnx(self.to_q(x)), (fnx(self.to_k(context)) if k is None else k), fnx((self.to_v(context)) if v is None else v)
+   def __call__(self, x:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+      q,k,v = self.to_q(x), self.to_k(x), self.to_v(x)
+      q,k,v = [y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2) for y in (q,k,v)]
+      attention = scaled_dot_product_attention(q, k, v, is_causal=self.is_causal).dropout(self.dropout).transpose(-3,-2)
+      h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
+      return h_.sequential(self.to_out),k,v
+
+class CrossAttention:
+   def __init__(self, query_dim, n_heads, d_head, dropout=0.1):
+      self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
+      self.num_heads = n_heads
+      self.head_size = d_head
+      self.to_out = [Linear(n_heads*d_head, query_dim)]
+      self.dropout = dropout
+   def __call__(self, x:Tensor, attn_mask:Tensor, k:Tensor, v:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+      fnx = lambda y: y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2)
+      q = fnx(self.to_q(x))
+      a = fnx(attn_mask)
       # if attn_mask is not None: attn_mask = attn_mask.reshape(attn_mask.shape[0], 1, *attn_mask.shape[1:]).expand((attn_mask.shape[0], self.num_heads, *attn_mask.shape[1:]))
-      attention = scaled_dot_product_attention(q, k, v, is_causal=self.is_causal, attn_mask=attn_mask).dropout(self.dropout).transpose(-3,-2)
+      attention = scaled_dot_product_attention(q, k, v, attn_mask=a).dropout(self.dropout).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
       return h_.sequential(self.to_out), k, v
 
@@ -59,35 +76,38 @@ class FeedForward:
    def __call__(self, x:Tensor) -> Tensor:
       return x.sequential(self.net)
 
-class CrossAttentionBlock:
-   def __init__(self, dim, context_dim, n_heads, d_head, ff_dim, dropout=0.1, is_causal=False, cross_attn=True):
+class AttentionBlock:
+   def __init__(self, dim, n_heads, d_head, ff_mult, dropout=0.1, is_causal=False, cross_attn=True):
       self.norm1 = LayerNorm(dim)
-      self.attn1 = CrossAttention(dim, dim, n_heads, d_head, is_causal=is_causal)
+      self.attn1 = SelfAttention(dim, n_heads, d_head, is_causal=is_causal)
       self.cross_attn = cross_attn
       if self.cross_attn:
          self.norm2 = LayerNorm(dim)
-         self.attn2 = CrossAttention(dim, context_dim, n_heads, d_head, is_causal=is_causal)
+         self.attn2 = CrossAttention(dim, n_heads, d_head)
       self.norm3 = LayerNorm(dim)
-      self.ff    = FeedForward(dim)
+      self.ff    = FeedForward(dim, mult=ff_mult)
       self.dropout = dropout
-   def __call__(self, x, context:Optional[Tensor]=None, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
-      x, k, v = self.attn1(self.norm1(x), k=k, v=v) + x
+   def __call__(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
+      h,k,v = self.attn1(self.norm1(x))
+      x = x + h
       if self.cross_attn:
-         x = self.attn2(self.norm2(x), context=context, attn_mask=attn_mask, k=k, v=v) + x
+         h,_,_ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
+         x = x + h
       x = self.ff(self.norm3(x)).dropout(self.dropout) + x
       return x, k, v
 
 class FusedTransformer:
-   def __init__(self, vocab_size:int, ctx_pos_size:int, dec_pos_size:int, n_layers:int, ctx_dim:int, dec_dim:int, ctx_heads:int, dec_heads:int, ctx_ff_dim:int, dec_ff_dim:int):
+   def __init__(self, vocab_size:int, ctx_pos_size:int, dec_pos_size:int, n_layers:int, ctx_dim:int, dec_dim:int, ctx_heads:int, dec_heads:int, ctx_ff_mult:int, dec_ff_mult:int):
       self.ctx_tok_embed = Embedding(vocab_size, ctx_dim)
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
       self.dec_pos_embed = Embedding(dec_pos_size, dec_dim)
+      self.dec_pos_size = dec_pos_size
 
       self.layers = [
          [
-            CrossAttentionBlock(ctx_dim, ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_dim, is_causal=True, cross_attn=False),
-            CrossAttentionBlock(dec_dim, ctx_dim, dec_heads, dec_dim//dec_heads, dec_ff_dim),
+            AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False),
+            AttentionBlock(dec_dim, dec_heads, dec_dim//dec_heads, dec_ff_mult),
          ] for _ in range(n_layers)
       ]
 
@@ -107,37 +127,37 @@ class FusedTransformer:
          if phase == 1 or phase == 3: params += get_parameters(ctx_layer)
          if phase == 2 or phase == 3: params += get_parameters(dec_layer)
 
-      if phase == 1:
+      if phase == 1 or phase == 2:
          params += get_parameters(self.ctx_class_head)
-      else:
+      if phase == 2 or phase == 3:
          params += get_parameters(self.dec_class_head)
 
       return params
 
    def forward_ctx_only(self, ctx_toks:Tensor) -> Tensor:
       x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
-      x = x.sequential(ctx_toks)
+      for ctx_layer, _ in self.layers:
+         x,_,_ = ctx_layer(x)
       return self.ctx_class_head(x).log_softmax()
 
    def __call__(self, ctx_toks:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tensor:
       ctx_latent = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
 
-      CS,CD = ctx_latent.shape[-2:]
-      B,T,DS,DD = attn_mask.shape
-      dec_latent = self.dec_pos_embed(Tensor.arange(0, DS, requires_grad=False).reshape((1,1,-1))).expand(attn_mask.shape)
+      DS = self.dec_pos_size
+      B,T,_,DD = attn_mask.shape
+      dec_latent = self.dec_pos_embed(Tensor.arange(0, DS, requires_grad=False).reshape((1,1,-1))).expand((B,T,DS,DD))
 
       dec_latent = dec_latent.reshape(-1,DS,DD)
-      attn_mask  = attn_mask .reshape(-1,DS,DD)
+      attn_mask  = attn_mask .reshape(-1,1,DD)
 
       for ctx_layer, dec_layer in self.layers:
          ctx_latent,k,v = ctx_layer(ctx_latent)
-         # TODO: figure out reshapes
-         # k,v = [y.reshape((B,1,CS,CD)) for y in (k,v)]
+         k,v = [y.reshape((B,1,*y.shape[1:])).expand((B,T,*y.shape[1:])).reshape((-1,*y.shape[1:])) for y in (k,v,)]
          if detach_ctx:
             k,v = k.detach(),v.detach()
-         dec_latent,_,_ = dec_layer(dec_latent, ctx_latent, attn_mask, k, v)
+         dec_latent,_,_ = dec_layer(dec_latent, attn_mask, k, v)
       
-      return self.dec_class_head(dec_latent).log_softmax()
+      return self.dec_class_head(dec_latent.reshape((B,T,DS,DD))).log_softmax()
 
 def load_train_test():
    with open(Config.dataset) as f:
@@ -167,7 +187,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
    print(f"Using {last_weight}")
    load_state_dict(model, safe_load(last_weight))
 
-def train(phase:int, sigma:float=0.01):
+def train(phase:int):
    assert phase in (options:=[1,2,3]), f"phase was {phase}, must be in {options}"
 
    model = FusedTransformer(**Config.model_params.to_dict())
@@ -188,13 +208,21 @@ def train(phase:int, sigma:float=0.01):
    if phase == 2 or phase == 3:
       load_latest_weight(model, "model", phase=(phase-1))
 
-   opt = Adam(model.get_parameters(phase), Config.train[phase].learning_rate)
+   all_params = get_parameters(model)
+   train_params = model.get_parameters(phase)
+   for label, params in (("Model Size:  ", all_params), ("Train Params:", train_params)):
+      sz = 0
+      for p in params:
+         sz += prod(p.shape)
+      print(f"{label} {sz/1e6:.2f} MB")
+   opt = Adam(train_params, Config.train[phase].learning_rate)
 
    X_train, X_test = load_train_test()
 
    BS = Config.train[phase].batch_size
    CS = Config.model_params.ctx_pos_size
    DS = Config.model_params.dec_pos_size
+   NH = Config.model_params.dec_heads
 
    s_time = time.time()
    step, test_index = 0, 0
@@ -215,20 +243,26 @@ def train(phase:int, sigma:float=0.01):
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
       X = Tensor(X_tok, dtype=dtypes.float32, requires_grad=False)
 
-      if phase == 1:
+      loss: Optional[Tensor] = None
+      if phase == 1 or phase == 2:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
          
          output = model.forward_ctx_only(X)
-      else:
+         output.realize()
+         loss = output.sparse_categorical_crossentropy(Y)
+      if phase == 2 or phase == 3:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
-         attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
+         attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,1,CS)
          output = model(X, attn_mask, detach_ctx=(phase==2))
-      
-      loss = output.sparse_categorical_crossentropy(Y)
+         del attn_mask
+         loss_2 = output.sparse_categorical_crossentropy(Y)
+         loss = loss_2 if loss is None else loss + loss_2
+         del loss_2
 
+      assert loss is not None
       if test_index == 0:
          loss.realize()
          opt.zero_grad()
@@ -245,6 +279,8 @@ def train(phase:int, sigma:float=0.01):
             accs_l = test_accs if test_index==2 else train_accs
             for i in range(DS):
                accs_l[i].append((output[:,:,i:i+1].argmax(axis=-1)==Y[:,:,i:i+1]).mean().numpy().item())
+
+      del X, Y, output, loss
 
       TE = Config.train[phase].test_every
       if (step+1) % TE == 0:
@@ -335,6 +371,7 @@ def generate_dec(count=20, model=None, start=text, archive=False):
       model = FusedTransformer(**Config.model_params.to_dict())
       load_latest_weight(model, "model", archive)
 
+   BS = 1
    CS = Config.model_params.ctx_pos_size
    DS = Config.model_params.dec_pos_size
    all_output = start
@@ -344,20 +381,30 @@ def generate_dec(count=20, model=None, start=text, archive=False):
    for i in trange(start_i, count+start_i):
       assert X.shape == (1,CS,)
 
-      pull_i = min(i, CS-1)
-      pred = model.forward_ctx_only(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
-      char = decode([pred.numpy().item()])[0]
-      all_output += char
+      start_i = min(len(all_output)-1, CS-1)
+      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,start_i:start_i+1,:,:]
+      output = model(X.realize(), attn_mask, detach_ctx=True)
+      pred = output.argmax(axis=-1).numpy()
+
+      chars = decode([pred[0,0,i] for i in range(DS)])
+      for char in chars:
+         all_output += char
 
       X_np = np.zeros((1,CS+DS))
       X_np[:,:-DS] = X.numpy()
+      # a = [f"0-{X_np.shape[1]-DS}"]
       if len(all_output) < CS:
-         X_np[:,i+1:i+DS] = pred.numpy()
-         X = Tensor(X_np[:,:-1], dtype=dtypes.float32, requires_grad=False)
+         X_np[:,start_i+1:start_i+1+DS] = pred
+         # a.append(f"{start_i+1}-{start_i+1+DS}")
+         X = Tensor(X_np[:,:-DS], dtype=dtypes.float32, requires_grad=False)
+         # r = f"0-{X_np.shape[1]-DS}"
       else:
-         X_np[:,-1:] = pred.numpy()
-         X = Tensor(X_np[:,1:], dtype=dtypes.float32, requires_grad=False)
+         X_np[:,start_i+1:start_i+1+DS] = pred
+         # a.append(f"{start_i+1}-{start_i+1+DS}")
+         X = Tensor(X_np[:,start_i+DS-CS+1:start_i+DS+1], dtype=dtypes.float32, requires_grad=False)
+         # r = f"{start_i+DS-CS+1}-{start_i+DS+1}"
       del pred
+      # print(f"writing to {', '.join(a)} | reading from {r}")
    
    del X
    return all_output
@@ -366,6 +413,6 @@ if __name__ == "__main__":
    # train(phase=1)
    # print(generate_ctx(count=512))
 
-   # train(phase=2)
+   train(phase=2)
    # train(phase=3)
-   print(generate_dec(count=128))
+   # print(generate_dec(count=128, model=FusedTransformer(**Config.model_params.to_dict())))

@@ -10,8 +10,8 @@ class ModelParams(Dictable):
    dec_dim      = 256
    ctx_heads    = 8
    dec_heads    = 8
-   ctx_ff_dim   = ctx_dim * 2
-   dec_ff_dim   = dec_dim * 2
+   ctx_ff_mult  = 2
+   dec_ff_mult  = 2
 
 class Train:
    learning_rate = 2**-12
@@ -22,14 +22,20 @@ class Train:
    gen_count  = 512
 
 class Phase1Train(Train):
-   batch_size = 108
+   batch_size = 128
    test_every = 25
    save_every = 500
    gen_every  = 500
 
+   test_every = 5
+   save_every = 5
+   gen_every  = 5
+
 class Phase2Train(Train):
    batch_size = 5
-   gen_every  = 500000
+   test_every = 5
+   save_every = 5
+   gen_every  = 5
 
 class Phase3Train(Train):
    batch_size = 4
