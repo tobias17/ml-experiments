@@ -45,6 +45,7 @@ class Phase2Train(Train):
 
 class Phase3Train(Train):
    batch_size = 4
+   gen_every  = 500000
 
 class Config:
    dataset = "datasets/shakespear.txt"

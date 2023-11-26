@@ -451,6 +451,6 @@ if __name__ == "__main__":
    # train(phase=1)
    # print(generate_ctx(count=512))
 
-   train(phase=2)
-   # train(phase=3)
+   # train(phase=2)
+   train(phase=3)
    # print(generate_den(count=128))
