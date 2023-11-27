@@ -15,31 +15,24 @@ class ModelParams(Dictable):
 
 class Train:
    learning_rate = 2**-12
-   batch_size = 5
+   batch_size = 1
    test_every = 50
    save_every = 1000
    gen_every  = 1000
-   gen_count  = 512
+   gen_count  = 64
 
 class Phase1Train(Train):
    batch_size = 128
    test_every = 25
    save_every = 500
    gen_every  = 500
-
-   test_every = 5
-   save_every = 5
-   gen_every  = 5
+   gen_count  = 512
 
 class Phase2Train(Train):
-   batch_size = 5
-   test_every = 5
-   save_every = 5
-   gen_every  = 5
+   batch_size = 14
 
 class Phase3Train(Train):
-   batch_size = 4
-   gen_every  = 500000
+   batch_size = 12
 
 class Config:
    dataset = "datasets/shakespear.txt"

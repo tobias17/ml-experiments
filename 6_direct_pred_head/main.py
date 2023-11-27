@@ -15,15 +15,6 @@ def scaled_dot_product_attention(self:Tensor, key:Tensor, value:Tensor, attn_mas
    assert all_int(self.shape), f"does not support symbolic shape {self.shape}"
    if is_causal: attn_mask = Tensor.ones(self.shape[-2], key.shape[-2], requires_grad=False, device=self.device).tril(0).cast(dtypes.bool)
    if attn_mask is not None and attn_mask.dtype == dtypes.bool: attn_mask = (attn_mask == 0).where(-float("inf"), attn_mask)
-   # if not is_causal and attn_mask is not None:
-   #    print("\n\nBefore attention mask")
-   #    print((self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1])).numpy())
-   #    print("\n\nAfter attention mask")
-   #    print((self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).numpy())
-   #    z = 0
-   if attn_mask is not None and not is_causal:
-      a = self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1])
-      b = a + attn_mask
    return (self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).softmax(-1).dropout(dropout_p) @ value
 
 class SelfAttention:
@@ -42,6 +33,13 @@ class SelfAttention:
       attention = scaled_dot_product_attention(q, k, v, is_causal=self.is_causal).dropout(self.dropout).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
       return h_.sequential(self.to_out),k,v
+   def get_parameters(self, is_last:bool):
+      return [
+         *([] if is_last else get_parameters(self.to_q)),
+         *get_parameters(self.to_k),
+         *get_parameters(self.to_v),
+         *([] if is_last else get_parameters(self.to_out)),
+      ]
 
 class CrossAttention:
    def __init__(self, query_dim, n_heads, d_head, dropout=0.1):
@@ -53,9 +51,8 @@ class CrossAttention:
    def __call__(self, x:Tensor, attn_mask:Tensor, k:Tensor, v:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
       fnx = lambda y: y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2)
       q = fnx(self.to_q(x))
-      a = fnx(attn_mask)
-      # if attn_mask is not None: attn_mask = attn_mask.reshape(attn_mask.shape[0], 1, *attn_mask.shape[1:]).expand((attn_mask.shape[0], self.num_heads, *attn_mask.shape[1:]))
-      attention = scaled_dot_product_attention(q, k, v, attn_mask=a).dropout(self.dropout).transpose(-3,-2)
+      attn_mask = attn_mask.reshape(attn_mask.shape[0], 1, *attn_mask.shape[1:]).expand((attn_mask.shape[0], self.num_heads, *attn_mask.shape[1:]))
+      attention = scaled_dot_product_attention(q, k, v, attn_mask=attn_mask).dropout(self.dropout).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
       return h_.sequential(self.to_out), k, v
 
@@ -88,13 +85,20 @@ class AttentionBlock:
       self.ff    = FeedForward(dim, mult=ff_mult)
       self.dropout = dropout
    def __call__(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
-      h,k,v = self.attn1(self.norm1(x))
+      h,k_,v_ = self.attn1(self.norm1(x))
       x = x + h
       if self.cross_attn:
          h,_,_ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
          x = x + h
       x = self.ff(self.norm3(x)).dropout(self.dropout) + x
-      return x, k, v
+      return x, k_, v_
+   def get_parameters(self, is_last:bool):
+      return [
+         *(get_parameters(self.norm1)),
+         *(self.attn1.get_parameters(is_last)),
+         *(get_parameters(self.norm2) + get_parameters(self.attn2) if self.cross_attn else []),
+         *([] if is_last else get_parameters(self.norm3) + get_parameters(self.ff)),
+      ]
 
 class FusedTransformer:
    def __init__(self, vocab_size:int, ctx_pos_size:int, dec_pos_size:int, n_layers:int, ctx_dim:int, dec_dim:int, ctx_heads:int, dec_heads:int, ctx_ff_mult:int, dec_ff_mult:int):
@@ -102,7 +106,6 @@ class FusedTransformer:
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
       self.dec_pos_embed = Embedding(dec_pos_size, dec_dim)
-      self.dec_pos_size = dec_pos_size
 
       self.layers = [
          [
@@ -110,6 +113,7 @@ class FusedTransformer:
             AttentionBlock(dec_dim, dec_heads, dec_dim//dec_heads, dec_ff_mult),
          ] for _ in range(n_layers)
       ]
+      self.n_layers = n_layers
 
       self.ctx_class_head = Linear(ctx_dim, vocab_size)
       self.dec_class_head = Linear(dec_dim, vocab_size)
@@ -123,13 +127,14 @@ class FusedTransformer:
       if phase == 2 or phase == 3:
          params += get_parameters(self.dec_pos_embed)
 
-      for ctx_layer, dec_layer in self.layers:
-         if phase == 1 or phase == 3: params += get_parameters(ctx_layer)
+      for i, v in enumerate(self.layers):
+         ctx_layer, dec_layer = v
+         if phase == 1 or phase == 3: params += ctx_layer.get_parameters(i+1 == self.n_layers)
          if phase == 2 or phase == 3: params += get_parameters(dec_layer)
 
-      if phase == 1 or phase == 2:
+      if phase == 1:
          params += get_parameters(self.ctx_class_head)
-      if phase == 2 or phase == 3:
+      else:
          params += get_parameters(self.dec_class_head)
 
       return params
@@ -143,12 +148,11 @@ class FusedTransformer:
    def __call__(self, ctx_toks:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tensor:
       ctx_latent = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
 
-      DS = self.dec_pos_size
-      B,T,_,DD = attn_mask.shape
+      B,T,DS,DD = attn_mask.shape
       dec_latent = self.dec_pos_embed(Tensor.arange(0, DS, requires_grad=False).reshape((1,1,-1))).expand((B,T,DS,DD))
 
       dec_latent = dec_latent.reshape(-1,DS,DD)
-      attn_mask  = attn_mask .reshape(-1,1,DD)
+      attn_mask  = attn_mask .reshape(-1,DS,DD)
 
       for ctx_layer, dec_layer in self.layers:
          ctx_latent,k,v = ctx_layer(ctx_latent)
@@ -210,11 +214,11 @@ def train(phase:int):
 
    all_params = get_parameters(model)
    train_params = model.get_parameters(phase)
-   for label, params in (("Model Size:  ", all_params), ("Train Params:", train_params)):
+   for label, params in (("Model Params:", all_params), ("Train Params:", train_params)):
       sz = 0
       for p in params:
          sz += prod(p.shape)
-      print(f"{label} {sz/1e6:.2f} MB")
+      print(f"{label} {sz/1e6:.2f}m")
    opt = Adam(train_params, Config.train[phase].learning_rate)
 
    X_train, X_test = load_train_test()
@@ -222,7 +226,6 @@ def train(phase:int):
    BS = Config.train[phase].batch_size
    CS = Config.model_params.ctx_pos_size
    DS = Config.model_params.dec_pos_size
-   NH = Config.model_params.dec_heads
 
    s_time = time.time()
    step, test_index = 0, 0
@@ -243,26 +246,22 @@ def train(phase:int):
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
       X = Tensor(X_tok, dtype=dtypes.float32, requires_grad=False)
 
-      loss: Optional[Tensor] = None
-      if phase == 1 or phase == 2:
+      if phase == 1:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
          
          output = model.forward_ctx_only(X)
          output.realize()
-         loss = output.sparse_categorical_crossentropy(Y)
-      if phase == 2 or phase == 3:
+      else:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
-         attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,1,CS)
+         attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
          output = model(X, attn_mask, detach_ctx=(phase==2))
          del attn_mask
-         loss_2 = output.sparse_categorical_crossentropy(Y)
-         loss = loss_2 if loss is None else loss + loss_2
-         del loss_2
+      
+      loss = output.sparse_categorical_crossentropy(Y)
 
-      assert loss is not None
       if test_index == 0:
          loss.realize()
          opt.zero_grad()
@@ -410,9 +409,9 @@ def generate_dec(count=20, model=None, start=text, archive=False):
    return all_output
 
 if __name__ == "__main__":
-   # train(phase=1)
+   train(phase=1)
    # print(generate_ctx(count=512))
 
-   train(phase=2)
+   # train(phase=2)
    # train(phase=3)
    # print(generate_dec(count=128, model=FusedTransformer(**Config.model_params.to_dict())))
