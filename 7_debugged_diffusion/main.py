@@ -101,7 +101,7 @@ class AttentionBlock:
       ]
 
 class FusedTransformer:
-   def __init__(self, vocab_size:int, ctx_pos_size:int, den_pos_size:int, n_layers:int, ctx_dim:int, den_dim:int, den_latent:int, den_timepos:int, ctx_heads:int, den_heads:int, ctx_ff_mult:int, den_ff_mult:int):
+   def __init__(self, vocab_size:int, timesteps:int, time_deltas:int, ctx_pos_size:int, den_pos_size:int, n_layers:int, ctx_dim:int, den_dim:int, den_latent:int, den_timepos:int, ctx_heads:int, den_heads:int, ctx_ff_mult:int, den_ff_mult:int):
       self.ctx_tok_embed = Embedding(vocab_size, ctx_dim)
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
@@ -160,8 +160,6 @@ class FusedTransformer:
       den_latent = den_latent.cat(den_timepos.reshape((1,1,*den_timepos.shape[-2:])).expand((*den_latent.shape[:2],*den_timepos.shape[-2:])), dim=-1)
 
       B,T,DS,DD = attn_mask.shape
-      den_latent = self.den_pos_embed(Tensor.arange(0, DS, requires_grad=False).reshape((1,1,-1))).expand((B,T,DS,DD))
-
       den_latent = den_latent.reshape(-1,DS,DD)
       attn_mask  = attn_mask .reshape(-1,DS,DD)
 
@@ -434,13 +432,13 @@ def generate_ctx(count=20, model=None, start=text, archive=False):
    del X
    return all_output
 
-def generate_den(count=20, timestep_reduce=10, model=None, start=text, archive=False):
+def generate_den(count=20, timestep_reduce=10, model:Optional[FusedTransformer]=None, start=text, archive=False):
    global encode, decode
    load_train_test()
    all_alphas = make_alphas()
    if model is None:
-      ctx_model = FusedTransformer(**Config.model_params.to_dict())
-      load_latest_weight(ctx_model, "model", archive)
+      model = FusedTransformer(**Config.model_params.to_dict())
+      load_latest_weight(model, "model", archive)
 
    BS = 1
    TS = Config.model_params.timesteps
@@ -455,12 +453,12 @@ def generate_den(count=20, timestep_reduce=10, model=None, start=text, archive=F
       data = np.zeros((CS,))-1
       data[:start_i] = np.array(encode(toks[:start_i]))
       data_i = start_i
-      return data, data_i
+      return Tensor(data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1), data_i
    
-   def make_x_0(toks, start_i: int):
+   def make_x_0(toks, start_i: int) -> Tensor:
       assert start_i < len(toks)
       start_data = np.array(encode(toks[start_i:])) # type: ignore
-      return model.make_x_0_from(Tensor(start_data, dtype=dtypes.float32, requires_grad=False).reshape(BS,1,-1))
+      return model.make_x_0_from(Tensor(start_data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
 
    start_i = len(all_output) - DS
    assert start_i > 0, f"input size {len(all_output)} must be atleast 1 greater than decoder head size {DS}"
@@ -478,9 +476,9 @@ def generate_den(count=20, timestep_reduce=10, model=None, start=text, archive=F
          alphas[i] = all_alphas[int(ts)]
          timesteps[i] = ts
       alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1)
-      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:].reshape(-1,DS,CS)
+      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
 
-      x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.latent_dim)*(1-alphas)
+      x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.den_latent)*(1-alphas)
       e_t = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
       pred_x_0 = x_t - e_t
 
@@ -495,60 +493,17 @@ def generate_den(count=20, timestep_reduce=10, model=None, start=text, archive=F
       den_start_amount -= timestep_reduce
 
       if start_i < len(all_output):
-         pred_x_0[:,:,:len(all_output)-start_i] = make_x_0(all_output, start_i).detach()
+         new_x_0 = make_x_0(all_output, start_i)
+         pred_x_0[:,:,:len(all_output)-start_i] = new_x_0.reshape((1,*new_x_0.shape)).detach()
 
       x_0 = pred_x_0.realize().detach()
 
    return all_output
 
-def generate_dec(count=20, model=None, start=text, archive=False):
-   load_train_test()
-   if model is None:
-      model = FusedTransformer(**Config.model_params.to_dict())
-      load_latest_weight(model, "model", archive)
-
-   BS = 1
-   CS = Config.model_params.ctx_pos_size
-   DS = Config.model_params.dec_pos_size
-   all_output = start
-   start_i = len(all_output) - 1
-
-   X = Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-len(all_output))) )
-   for i in trange(start_i, count+start_i):
-      assert X.shape == (1,CS,)
-
-      start_i = min(len(all_output)-1, CS-1)
-      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,start_i:start_i+1,:,:]
-      output = model(X.realize(), attn_mask, detach_ctx=True)
-      pred = output.argmax(axis=-1).numpy()
-
-      chars = decode([pred[0,0,i] for i in range(DS)])
-      for char in chars:
-         all_output += char
-
-      X_np = np.zeros((1,CS+DS))
-      X_np[:,:-DS] = X.numpy()
-      # a = [f"0-{X_np.shape[1]-DS}"]
-      if len(all_output) < CS:
-         X_np[:,start_i+1:start_i+1+DS] = pred
-         # a.append(f"{start_i+1}-{start_i+1+DS}")
-         X = Tensor(X_np[:,:-DS], dtype=dtypes.float32, requires_grad=False)
-         # r = f"0-{X_np.shape[1]-DS}"
-      else:
-         X_np[:,start_i+1:start_i+1+DS] = pred
-         # a.append(f"{start_i+1}-{start_i+1+DS}")
-         X = Tensor(X_np[:,start_i+DS-CS+1:start_i+DS+1], dtype=dtypes.float32, requires_grad=False)
-         # r = f"{start_i+DS-CS+1}-{start_i+DS+1}"
-      del pred
-      # print(f"writing to {', '.join(a)} | reading from {r}")
-   
-   del X
-   return all_output
-
 if __name__ == "__main__":
-   train(phase=1)
+   # train(phase=1)
    # print(generate_ctx(count=512))
 
    # train(phase=2)
    # train(phase=3)
-   # print(generate_dec(count=128, model=FusedTransformer(**Config.model_params.to_dict())))
+   print(generate_den(count=128, model=FusedTransformer(**Config.model_params.to_dict())))

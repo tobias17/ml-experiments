@@ -5,9 +5,8 @@ class ModelParams(Dictable):
    vocab_size   = 65
    timesteps    = 400
    time_deltas  = 100
-   pos_size     = (timesteps // time_deltas) + 1
    ctx_pos_size = 256
-   den_pos_size = 8
+   den_pos_size = (timesteps // time_deltas) + 1
    n_layers     = 4
    ctx_dim      = 256
    den_dim      = 256
@@ -34,11 +33,14 @@ class Phase1Train(Train):
    gen_every  = 500
 
 class Phase2Train(Train):
-   batch_size = 12
+   batch_size = 20
+   test_every = 10
+   save_every = 100
    gen_count  = 64*10
 
 class Phase3Train(Train):
-   batch_size = 10
+   batch_size = 16
+   gen_every  = 10
    gen_count  = 64*10
 
 class Config:
