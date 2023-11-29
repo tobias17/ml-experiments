@@ -4,7 +4,7 @@ from typing import Dict
 class ModelParams(Dictable):
    vocab_size   = 65
    ctx_pos_size = 256
-   dec_pos_size = 8
+   dec_pos_size = 2
    n_layers     = 4
    ctx_dim      = 256
    dec_dim      = 256
@@ -29,10 +29,13 @@ class Phase1Train(Train):
    gen_count  = 512
 
 class Phase2Train(Train):
-   batch_size = 14
+   batch_size = 14*2
+   test_every = 10
+   save_every = 100
 
 class Phase3Train(Train):
-   batch_size = 12
+   batch_size = 12*2
+   test_every = 10
 
 class Config:
    dataset = "datasets/shakespear.txt"

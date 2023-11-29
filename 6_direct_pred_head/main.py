@@ -409,9 +409,9 @@ def generate_dec(count=20, model=None, start=text, archive=False):
    return all_output
 
 if __name__ == "__main__":
-   train(phase=1)
+   # train(phase=1)
    # print(generate_ctx(count=512))
 
    # train(phase=2)
-   # train(phase=3)
+   train(phase=3)
    # print(generate_dec(count=128, model=FusedTransformer(**Config.model_params.to_dict())))
