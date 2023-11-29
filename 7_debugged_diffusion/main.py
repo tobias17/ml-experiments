@@ -150,6 +150,9 @@ class FusedTransformer:
          x,_,_ = ctx_layer(x)
       return self.ctx_class_head(x).log_softmax()
 
+   def make_x_0_from(self, toks:Tensor) -> Tensor:
+      return self.den_tok_embed(toks)
+
    def __call__(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tensor:
       ctx_latent = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
 
@@ -229,7 +232,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 
-def train(phase:int):
+def train(phase:int, scale:float=0.5):
    assert phase in (options:=[1,2,3]), f"phase was {phase}, must be in {options}"
 
    model = FusedTransformer(**Config.model_params.to_dict())
@@ -259,11 +262,14 @@ def train(phase:int):
       print(f"{label} {sz/1e6:.2f}m")
    opt = Adam(train_params, Config.train[phase].learning_rate)
 
+   all_alphas = make_alphas()
    X_train, X_test = load_train_test()
 
+   TS = Config.model_params.timesteps
    BS = Config.train[phase].batch_size
    CS = Config.model_params.ctx_pos_size
-   DS = Config.model_params.dec_pos_size
+   DS = Config.model_params.den_pos_size
+   TD = Config.model_params.time_deltas
 
    s_time = time.time()
    step, test_index = 0, 0
@@ -294,9 +300,30 @@ def train(phase:int):
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
+         diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD // 2
+
+         alphas = np.ones((DS,), dtype=np.float32)
+         timesteps = np.zeros((DS,), dtype=np.float32)
+         for i in range(DS):
+            ts = min(diff_start_amount + i*TD, TS - 1)
+            alphas[i] = all_alphas[int(ts)]
+            timesteps[i] = ts
+         alphas_np = alphas
+         alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_latent)
+
          attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
-         output = model(X, attn_mask, detach_ctx=(phase==2))
-         del attn_mask
+         x_0 = model.make_x_0_from(Y.detach())
+         x_t = x_0*alphas + ((1-alphas)*Tensor.randn(*x_0.shape)).detach()
+
+         e_t = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+         pred_x_0 = x_t - e_t
+
+         loss_1 = (pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape)
+         loss_2 = model.estimate(x_0).sparse_categorical_crossentropy(Y)
+         loss_3 = (output:=model.estimate(pred_x_0)).sparse_categorical_crossentropy(Y)
+         loss = loss_1 + loss_2 + loss_3
+
+         del attn_mask, loss_1, loss_2, loss_3, x_0, pred_x_0, x_t, e_t
       
       loss = output.sparse_categorical_crossentropy(Y)
 
@@ -356,7 +383,7 @@ def train(phase:int):
          if phase == 1:
             text = generate_ctx(Config.train[phase].gen_count, model=model)
          else:
-            text = generate_dec(Config.train[phase].gen_count, model=model)
+            text = generate_den(Config.train[phase].gen_count, model=model)
          gen_folder = f"{weights_folder}/p{phase}_gens"
          if not os.path.exists(gen_folder):
             os.makedirs(gen_folder)
@@ -407,7 +434,7 @@ def generate_ctx(count=20, model=None, start=text, archive=False):
    del X
    return all_output
 
-def generate_den(count=20, timestep_reduce=25, model=None, start=text, archive=False):
+def generate_den(count=20, timestep_reduce=10, model=None, start=text, archive=False):
    global encode, decode
    load_train_test()
    all_alphas = make_alphas()
@@ -422,14 +449,13 @@ def generate_den(count=20, timestep_reduce=25, model=None, start=text, archive=F
    TD = Config.model_params.time_deltas
    all_output = start
 
-   def make_context(toks, start_i):
+   def make_X(toks, start_i):
       if len(toks) > CS:
          toks = toks[-CS:]
       data = np.zeros((CS,))-1
       data[:start_i] = np.array(encode(toks[:start_i]))
       data_i = start_i
-      context = ctx_model.make_context_from(Tensor(data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
-      return context, data_i
+      return data, data_i
    
    def make_x_0(toks, start_i: int):
       assert start_i < len(toks)
@@ -441,7 +467,7 @@ def generate_den(count=20, timestep_reduce=25, model=None, start=text, archive=F
    x_0 = make_x_0(all_output, start_i)
    z_0 = x_0
    den_start_amount = timestep_reduce
-   context, data_i = make_context(all_output, start_i)
+   X, data_i = make_X(all_output, start_i)
 
    for i in trange(count):
 
@@ -455,7 +481,7 @@ def generate_den(count=20, timestep_reduce=25, model=None, start=text, archive=F
       attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:].reshape(-1,DS,CS)
 
       x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.latent_dim)*(1-alphas)
-      e_t = model(x_t, context, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+      e_t = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
       pred_x_0 = x_t - e_t
 
       while den_start_amount <= timestep_reduce:
@@ -463,7 +489,7 @@ def generate_den(count=20, timestep_reduce=25, model=None, start=text, archive=F
             pred = model.estimate(pred_x_0)[0,0,0,:]
             all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
          start_i += 1
-         context, data_i = make_context(all_output, start_i)
+         X, data_i = make_X(all_output, start_i)
          pred_x_0 = pred_x_0[:,:,1:].cat(Tensor.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
          den_start_amount += TD
       den_start_amount -= timestep_reduce
