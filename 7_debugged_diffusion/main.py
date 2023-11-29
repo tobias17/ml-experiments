@@ -18,7 +18,7 @@ def scaled_dot_product_attention(self:Tensor, key:Tensor, value:Tensor, attn_mas
    return (self @ key.transpose(-2,-1) / math.sqrt(self.shape[-1]) + attn_mask).softmax(-1).dropout(dropout_p) @ value
 
 class SelfAttention:
-   def __init__(self, query_dim, n_heads, d_head, dropout=0.1, is_causal=False):
+   def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout, is_causal=False):
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.to_k = Linear(query_dim, n_heads*d_head, bias=False)
       self.to_v = Linear(query_dim, n_heads*d_head, bias=False)
@@ -42,7 +42,7 @@ class SelfAttention:
       ]
 
 class CrossAttention:
-   def __init__(self, query_dim, n_heads, d_head, dropout=0.1):
+   def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout):
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.num_heads = n_heads
       self.head_size = d_head
@@ -74,7 +74,7 @@ class FeedForward:
       return x.sequential(self.net)
 
 class AttentionBlock:
-   def __init__(self, dim, n_heads, d_head, ff_mult, dropout=0.1, is_causal=False, cross_attn=True):
+   def __init__(self, dim, n_heads, d_head, ff_mult, dropout=Config.dropout, is_causal=False, cross_attn=True):
       self.norm1 = LayerNorm(dim)
       self.attn1 = SelfAttention(dim, n_heads, d_head, is_causal=is_causal)
       self.cross_attn = cross_attn
@@ -236,7 +236,7 @@ def train(phase:int, scale:float=0.5):
    model = FusedTransformer(**Config.model_params.to_dict())
 
    type_name = os.path.basename(os.path.dirname(__file__))
-   if phase == 1:
+   if phase == 1 or True:
       weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
    else:
       weights_folder = get_latest_folder()
@@ -248,8 +248,8 @@ def train(phase:int, scale:float=0.5):
             elif text.lower().startswith("n"):
                raise RuntimeError("Avoiding overwriting previous run")
 
-   if phase == 2 or phase == 3:
-      load_latest_weight(model, "model", phase=(phase-1))
+   # if phase == 2 or phase == 3:
+   #    load_latest_weight(model, "model", phase=(phase-1))
 
    all_params = get_parameters(model)
    train_params = model.get_parameters(phase)
@@ -485,7 +485,7 @@ def generate_den(count=20, timestep_reduce=10, model:Optional[FusedTransformer]=
       while den_start_amount <= timestep_reduce:
          if start_i >= len(all_output):
             pred = model.estimate(pred_x_0)[0,0,0,:]
-            all_output += decode([pred.argmax(axis=-1).numpy().item()])[0]
+            all_output += decode([pred.argmax(axis=-1).numpy().item()])[0] # type: ignore
          start_i += 1
          X, data_i = make_X(all_output, start_i)
          pred_x_0 = pred_x_0[:,:,1:].cat(Tensor.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
@@ -505,5 +505,5 @@ if __name__ == "__main__":
    # print(generate_ctx(count=512))
 
    # train(phase=2)
-   # train(phase=3)
-   print(generate_den(count=128, model=FusedTransformer(**Config.model_params.to_dict())))
+   train(phase=3)
+   # print(generate_den(count=128, model=FusedTransformer(**Config.model_params.to_dict())))

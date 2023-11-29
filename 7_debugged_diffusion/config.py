@@ -3,7 +3,7 @@ from typing import Dict
 
 class ModelParams(Dictable):
    vocab_size   = 65
-   timesteps    = 400
+   timesteps    = 200
    time_deltas  = 100
    ctx_pos_size = 256
    den_pos_size = (timesteps // time_deltas) + 1
@@ -39,13 +39,14 @@ class Phase2Train(Train):
    gen_count  = 64*10
 
 class Phase3Train(Train):
-   batch_size = 16
-   gen_every  = 10
+   learning_rate = 2**-13
+   batch_size = 28
    gen_count  = 64*10
 
 class Config:
    dataset = "datasets/shakespear.txt"
    split = 0.9
+   dropout = 0.2
 
    model_params = ModelParams
    schedule = Schedules.SQRT
