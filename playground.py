@@ -48,17 +48,17 @@ def test_batch_causal_masks():
 
    Tensor.manual_seed(1337)
 
-   # BS = 2
-   # dim = 8
-   # ctx = 5
-   # den = 3
-   # n_heads = 2
+   BS = 2
+   dim = 8
+   ctx = 5
+   den = 3
+   n_heads = 2
 
-   BS  = 5
-   dim = 256
-   ctx = 256
-   den = 8
-   n_heads = 8
+   # BS  = 5
+   # dim = 256
+   # ctx = 256
+   # den = 8
+   # n_heads = 8
    to_b = lambda x: x.cast(dtypes.bool) if True else x
 
    ca = CrossAttention(dim, dim, n_heads, dim//n_heads)
