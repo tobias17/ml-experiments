@@ -134,7 +134,7 @@ class FusedTransformer:
          Tensor.silu,
          Linear(den_dim*2, den_dim*2),
       ]
-      self.time_dim = time_dim
+      self.den_dim, self.time_dim = den_dim, time_dim
 
       self.layers: List[Tuple[AttentionBlock,TimeFusion,AttentionBlock]] = [
          (
@@ -185,9 +185,9 @@ class FusedTransformer:
       ctx_latent  = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
       time_latent = timestep_embedding(timesteps.reshape((-1,1)), self.time_dim).sequential(self.den_time_embed)
 
-      B,T,DS,DD = attn_mask.shape
-      den_latent = den_latent.reshape(-1,DS,DD)
-      attn_mask  = attn_mask .reshape(-1,DS,DD)
+      B,T,DS,_ = attn_mask.shape
+      den_latent = den_latent.reshape(-1,DS,self.den_dim)
+      attn_mask  = attn_mask .reshape(-1,DS,attn_mask.shape[-1])
 
       for ctx_layer, time_layer, den_layer in self.layers:
          ctx_latent,k,v = ctx_layer(ctx_latent)
@@ -197,7 +197,7 @@ class FusedTransformer:
          den_latent = time_layer(den_latent, time_latent)
          den_latent,_,_ = den_layer(den_latent, attn_mask, k, v) # type: ignore
       
-      return den_latent.reshape((B,T,DS,DD))
+      return den_latent.reshape((B,T,DS,self.den_dim))
 
    def estimate(self, den_latent:Tensor) -> Tensor:
       return self.den_class_head(den_latent).log_softmax()

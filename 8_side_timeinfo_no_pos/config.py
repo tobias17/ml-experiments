@@ -8,9 +8,9 @@ class ModelParams(Dictable):
    ctx_pos_size = 256
    den_pos_size = (timesteps // time_deltas) + 1
    n_layers     = 4
-   ctx_dim      = 256
-   den_dim      = 256
-   time_dim     = 320
+   ctx_dim      = 256//2
+   den_dim      = 256//2
+   time_dim     = 320//2
    fusion_mult  = 1
    ctx_heads    = 8
    den_heads    = 8
@@ -39,9 +39,7 @@ class Phase2Train(Train):
 
 class Phase3Train(Train):
    learning_rate = 2**-13
-   batch_size = 20
-   test_every=5
-   gen_every=25
+   batch_size = 40
    gen_count  = 64*10
 
 class Config:
