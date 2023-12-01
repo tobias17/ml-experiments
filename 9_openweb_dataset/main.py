@@ -446,7 +446,12 @@ def generate_ctx(count=8, model=None, start=text, archive=False):
 
       pull_i = min(i, CS-1)
       pred = jit(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
-      char = decode([int(pred.numpy().item() + 0.5)]).decode()
+      tok = int(pred.numpy().item() + 0.5)
+      byte = decode([tok])
+      try:
+         char = byte.decode()
+      except Exception:
+         char = "<|?|>"
       all_output += char
 
       X_np = np.zeros((1,CS+1))
@@ -497,7 +502,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
       outputs = model(*[a.realize() for a in args])
       return [o.realize() for o in outputs]
 
-   toks = encode(all_output)
+   toks = encode(all_output) # type: ignore
    start_i = len(toks) - DS
    assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
    x_0 = make_x_0(toks, start_i)
@@ -538,11 +543,11 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
 
       x_0 = pred_x_0.realize().detach()
 
-   return decode(toks).decode()
+   return decode(toks).decode() # type: ignore
 
 if __name__ == "__main__":
-   # train(phase=1)
-   print(generate_ctx(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
+   train(phase=1)
+   # print(generate_ctx(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
 
    # train(phase=2)
    # train(phase=3)
