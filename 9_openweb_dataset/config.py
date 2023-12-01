@@ -23,7 +23,7 @@ class Train:
    test_every = 25
    save_every = 1000
    gen_every  = 1000
-   gen_count  = 128
+   gen_count  = 64
 
    grad_ctx = False
    grad_den = False
@@ -35,18 +35,19 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   batch_size = 32
+   batch_size = 24
    save_every = 500
    gen_every  = 500
+   gen_every  = 50
 
    grad_ctx = True
 
    ctx_tok_loss = True
 
 class Phase2Train(Train):
-   batch_size = 12
+   batch_size = 10
    save_every = 250
-   gen_count  = 64*10
+   gen_count  = 64
    gen_every  = 5000000
 
    grad_ctx = True
@@ -59,8 +60,8 @@ class Phase2Train(Train):
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
-   batch_size = 10
-   gen_count  = 64*10
+   batch_size = 8
+   gen_count  = 64
 
    grad_ctx = True
    grad_den = True

@@ -3,6 +3,7 @@ from tinygrad.nn import Embedding, Linear, LayerNorm # type: ignore
 from tinygrad.nn.optim import Adam # type: ignore
 from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, safe_save, safe_load # type: ignore
 from tinygrad.helpers import dtypes, all_int, prod # type: ignore
+from tinygrad.jit import TinyJit # type: ignore
 import numpy as np
 import tiktoken
 from config import Config
@@ -434,13 +435,18 @@ def generate_ctx(count=8, model=None, start=text, archive=False):
    all_output = start
    start_i = len(all_output) - 1
 
-   X = Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1).pad( ((0,0), (0,CS-len(all_output))) )
+   @TinyJit
+   def jit(x):
+      return model.forward_ctx_only(x).realize()
+
+   X = Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1)
+   X = X.pad( ((0,0), (0,CS-X.shape[-1])) )
    for i in trange(start_i, count+start_i):
       assert X.shape == (1,CS,)
 
       pull_i = min(i, CS-1)
-      pred = model.forward_ctx_only(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
-      char = decode([pred.numpy().item()])[0]
+      pred = jit(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
+      char = decode([int(pred.numpy().item() + 0.5)]).decode()
       all_output += char
 
       X_np = np.zeros((1,CS+1))
@@ -456,13 +462,15 @@ def generate_ctx(count=8, model=None, start=text, archive=False):
    del X
    return all_output
 
-def generate_den(count=20, timestep_reduce=10, model:Optional[FusedTransformer]=None, start=text, archive=False):
+def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False):
    global encode, decode
    load_train_test()
    all_alphas = make_alphas()
    if model is None:
       model = FusedTransformer(**Config.model_params.to_dict())
       load_latest_weight(model, "model", archive)
+   
+   count = int(count * (Config.model_params.time_deltas / timestep_reduce))
 
    BS = 1
    TS = Config.model_params.timesteps
@@ -474,22 +482,28 @@ def generate_den(count=20, timestep_reduce=10, model:Optional[FusedTransformer]=
    def make_X(toks, start_i):
       if len(toks) > CS:
          toks = toks[-CS:]
+         start_i = CS
       data = np.zeros((CS,))-1
-      data[:start_i] = np.array(encode(toks[:start_i]))
+      data[:start_i] = np.array(toks[:start_i])
       data_i = start_i
       return Tensor(data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1), data_i
    
    def make_x_0(toks, start_i: int) -> Tensor:
       assert start_i < len(toks)
-      start_data = np.array(encode(toks[start_i:])) # type: ignore
-      return model.make_x_0_from(Tensor(start_data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
+      return model.make_x_0_from(Tensor(toks[start_i:], dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
 
-   start_i = len(all_output) - DS
-   assert start_i > 0, f"input size {len(all_output)} must be atleast 1 greater than decoder head size {DS}"
-   x_0 = make_x_0(all_output, start_i)
+   @TinyJit
+   def jit(*args):
+      outputs = model(*[a.realize() for a in args])
+      return [o.realize() for o in outputs]
+
+   toks = encode(all_output)
+   start_i = len(toks) - DS
+   assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
+   x_0 = make_x_0(toks, start_i)
    z_0 = x_0
    den_start_amount = timestep_reduce
-   X, data_i = make_X(all_output, start_i)
+   X, data_i = make_X(toks, start_i)
 
    for i in trange(count):
 
@@ -501,33 +515,35 @@ def generate_den(count=20, timestep_reduce=10, model:Optional[FusedTransformer]=
          timesteps[i] = ts
       alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1)
       attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
+      attn_mask = Tensor(attn_mask.realize().numpy())
 
       x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.den_dim)*(1-alphas)
-      e_t = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+
+      e_t, _ = jit(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
       pred_x_0 = x_t - e_t
 
       while den_start_amount <= timestep_reduce:
-         if start_i >= len(all_output):
+         if start_i >= len(toks):
             pred = model.estimate(pred_x_0)[0,0,0,:]
-            all_output += decode([pred.argmax(axis=-1).numpy().item()])[0] # type: ignore
+            toks.append(int(pred.argmax(axis=-1).numpy().item() + 0.5))
          start_i += 1
-         X, data_i = make_X(all_output, start_i)
+         X, data_i = make_X(toks, start_i)
          pred_x_0 = pred_x_0[:,:,1:].cat(Tensor.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
          den_start_amount += TD
       den_start_amount -= timestep_reduce
 
-      if start_i < len(all_output):
-         new_x_0 = make_x_0(all_output, start_i)
-         pred_x_0[:,:,:len(all_output)-start_i] = new_x_0.reshape((1,*new_x_0.shape)).detach()
+      if start_i < len(toks):
+         new_x_0 = make_x_0(toks, start_i)
+         pred_x_0[:,:,:len(toks)-start_i] = new_x_0.reshape((1,*new_x_0.shape)).detach()
 
       x_0 = pred_x_0.realize().detach()
 
-   return all_output
+   return decode(toks).decode()
 
 if __name__ == "__main__":
-   train(phase=1)
-   # print(generate_ctx(count=512))
+   # train(phase=1)
+   print(generate_ctx(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
 
    # train(phase=2)
    # train(phase=3)
-   # print(generate_den(count=128, model=FusedTransformer(**Config.model_params.to_dict())))
+   # print(generate_den(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
