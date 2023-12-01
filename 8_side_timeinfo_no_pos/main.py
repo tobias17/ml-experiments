@@ -179,6 +179,9 @@ class FusedTransformer:
          x,_,_ = ctx_layer(x)
       return self.ctx_class_head(x).log_softmax()
 
+   def ctx_predict(self, ctx_latent:Tensor) -> Tensor:
+      return self.ctx_class_head(ctx_latent).log_softmax()
+
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
 
@@ -198,7 +201,7 @@ class FusedTransformer:
          den_latent = time_layer(den_latent, time_latent)
          den_latent,_,_ = den_layer(den_latent, attn_mask, k, v) # type: ignore
       
-      return den_latent.reshape((B,T,DS,self.den_dim))
+      return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
    def estimate(self, den_latent:Tensor) -> Tensor:
       return self.den_class_head(den_latent).log_softmax()
@@ -256,7 +259,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 def train(phase:int, scale:float=0.5):
-   assert phase in (options:=[1,2,3]), f"phase was {phase}, must be in {options}"
+   tc = Config.train[phase]
 
    model = FusedTransformer(**Config.model_params.to_dict())
 
@@ -281,13 +284,13 @@ def train(phase:int, scale:float=0.5):
       for p in params:
          sz += prod(p.shape)
       print(f"{label} {sz/1e6:.2f}m")
-   opt = Adam(train_params, Config.train[phase].learning_rate)
+   opt = Adam(train_params, tc.learning_rate)
 
    all_alphas = make_alphas()
    X_train, X_test = load_train_test()
 
    TS = Config.model_params.timesteps
-   BS = Config.train[phase].batch_size
+   BS = tc.batch_size
    CS = Config.model_params.ctx_pos_size
    DS = Config.model_params.den_pos_size
    TD = Config.model_params.time_deltas
@@ -312,14 +315,7 @@ def train(phase:int, scale:float=0.5):
       X = Tensor(X_tok, dtype=dtypes.float32, requires_grad=False)
 
       loss = Tensor.zeros((1)).sum()
-      if Config.train[phase].ctx_tok_loss:
-         Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok, dtype=dtypes.float32)
-         
-         output = model.forward_ctx_only(X)
-         output.realize()
-         loss = loss + output.sparse_categorical_crossentropy(Y)
-      if Config.train[phase].den_tok_loss_orig or Config.train[phase].den_tok_loss_pred or Config.train[phase].den_tok_noise_loss:
+      if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
@@ -338,17 +334,27 @@ def train(phase:int, scale:float=0.5):
          x_0 = model.make_x_0_from(Y.detach())
          x_t = x_0*alphas + ((1-alphas)*Tensor.randn(*x_0.shape)).detach()
 
-         e_t = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+         e_t, ctx_latent = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
 
-         if Config.train[phase].den_tok_loss_orig:
+         if tc.ctx_tok_loss:
+            ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
+            loss = loss + model.ctx_predict(ctx_latent).sparse_categorical_crossentropy(Tensor(ctx_Y_tok, dtype=dtypes.float32))
+         if tc.den_tok_loss_orig:
             loss = loss + model.estimate(x_0).sparse_categorical_crossentropy(Y)
-         if Config.train[phase].den_tok_loss_pred:
+         if tc.den_tok_loss_pred:
             loss = loss + (output:=model.estimate(pred_x_0)).sparse_categorical_crossentropy(Y)
-         if Config.train[phase].den_tok_noise_loss:
+         if tc.den_tok_noise_loss:
             loss = loss + (pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape)
 
          del attn_mask, x_0, pred_x_0, x_t, e_t
+      elif tc.ctx_tok_loss:
+         Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
+         Y = Tensor(Y_tok, dtype=dtypes.float32)
+         
+         output = model.forward_ctx_only(X)
+         output.realize()
+         loss = loss + output.sparse_categorical_crossentropy(Y)
 
       if test_index == 0:
          loss.realize()
@@ -378,11 +384,11 @@ def train(phase:int, scale:float=0.5):
             else:
                train_acc_str, test_acc_str = f"{100.0*sum(train_accs[i][-1] for i in range(DS))/DS:.2f}", f"{100.0*sum(test_accs[i][-1] for i in range(DS))/DS:.2f}"
             print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {train_acc_str}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {test_acc_str}% | {(time.time() - s_time) / float(TE):.2f} sec/iter")
-            write_graph(train_loss, test_loss, f"{weights_folder}/p{phase}_graph_loss.png", delta=TE)
+            write_graph(train_loss, test_loss, f"{weights_folder}/p{phase}_graph_loss.png", delta=TE*Config.train[phase].batch_size)
             if phase == 1:
-               write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=TE)
+               write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=TE*Config.train[phase].batch_size)
             else:
-               write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=TE)
+               write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=TE*Config.train[phase].batch_size)
             s_time = time.time()
             test_index = 0
          else:
@@ -425,7 +431,7 @@ Bate, I beseech you, widow Dido.
 ANTONIO:
 """
 
-def generate_ctx(count=20, model=None, start=text, archive=False):
+def generate_ctx(count=8, model=None, start=text, archive=False):
    load_train_test()
    if model is None:
       model = FusedTransformer(**Config.model_params.to_dict())
@@ -529,6 +535,6 @@ if __name__ == "__main__":
    # train(phase=1)
    # print(generate_ctx(count=512))
 
-   # train(phase=2)
-   train(phase=3)
+   train(phase=2)
+   # train(phase=3)
    # print(generate_den(count=128, model=FusedTransformer(**Config.model_params.to_dict())))

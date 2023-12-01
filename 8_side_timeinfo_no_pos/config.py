@@ -8,12 +8,12 @@ class ModelParams(Dictable):
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
    n_layers     = 8
-   ctx_dim      = 256//4
-   den_dim      = 256//4
-   time_dim     = 320//4
+   ctx_dim      = 256//2
+   den_dim      = 256//2
+   time_dim     = 320//2
    fusion_mult  = 1
-   ctx_heads    = 4
-   den_heads    = 4
+   ctx_heads    = 8
+   den_heads    = 8
    ctx_ff_mult  = 2
    den_ff_mult  = 2
 
@@ -27,6 +27,7 @@ class Train:
 
    grad_ctx = False
    grad_den = False
+   detach_ctx = False
 
    ctx_tok_loss = False
    den_tok_loss_orig = False
@@ -34,7 +35,7 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   batch_size = 128
+   batch_size = 128*4
    save_every = 500
    gen_every  = 500
 
@@ -43,20 +44,23 @@ class Phase1Train(Train):
    ctx_tok_loss = True
 
 class Phase2Train(Train):
-   learning_rate = 2**-13
-   batch_size = 20
-   save_every = 100
+   batch_size = 150
+   save_every = 250
    gen_count  = 64*10
+   gen_every  = 5000000
 
+   grad_ctx = True
    grad_den = True
+   detach_ctx = True
 
+   ctx_tok_loss = True
    den_tok_loss_orig = True
    den_tok_loss_pred = True
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
-   learning_rate = 2**-13
-   batch_size = 320
+   learning_rate = 2**-14
+   batch_size = 150
    gen_count  = 64*10
 
    grad_ctx = True
@@ -78,5 +82,5 @@ class Config:
       2: Phase2Train,
       3: Phase3Train,
    }
-   start_phase = 3
+   start_phase = 2
    save_name = "p{0}_model_{1}.safetensors"
