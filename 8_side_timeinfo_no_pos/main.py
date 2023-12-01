@@ -311,13 +311,15 @@ def train(phase:int, scale:float=0.5):
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
       X = Tensor(X_tok, dtype=dtypes.float32, requires_grad=False)
 
-      if phase == 1:
+      loss = Tensor.zeros((1)).sum()
+      if Config.train[phase].ctx_tok_loss:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
          
          output = model.forward_ctx_only(X)
          output.realize()
-      else:
+         loss = loss + output.sparse_categorical_crossentropy(Y)
+      if Config.train[phase].den_tok_loss_orig or Config.train[phase].den_tok_loss_pred or Config.train[phase].den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok, dtype=dtypes.float32)
 
@@ -339,14 +341,14 @@ def train(phase:int, scale:float=0.5):
          e_t = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
          pred_x_0 = x_t - e_t
 
-         loss_1 = (pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape)
-         loss_2 = model.estimate(x_0).sparse_categorical_crossentropy(Y)
-         loss_3 = (output:=model.estimate(pred_x_0)).sparse_categorical_crossentropy(Y)
-         loss = loss_1 + loss_2 + loss_3
+         if Config.train[phase].den_tok_loss_orig:
+            loss = loss + model.estimate(x_0).sparse_categorical_crossentropy(Y)
+         if Config.train[phase].den_tok_loss_pred:
+            loss = loss + (output:=model.estimate(pred_x_0)).sparse_categorical_crossentropy(Y)
+         if Config.train[phase].den_tok_noise_loss:
+            loss = loss + (pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape)
 
-         del attn_mask, loss_1, loss_2, loss_3, x_0, pred_x_0, x_t, e_t
-      
-      loss = output.sparse_categorical_crossentropy(Y)
+         del attn_mask, x_0, pred_x_0, x_t, e_t
 
       if test_index == 0:
          loss.realize()
