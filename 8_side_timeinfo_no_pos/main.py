@@ -149,25 +149,26 @@ class FusedTransformer:
       self.den_class_head = Linear(den_dim, vocab_size)
    
    def get_parameters(self, phase:int) -> List[Tensor]:
-      params = []
+      params, tc = [], Config.train[phase]
 
-      if phase == 1 or phase == 3:
+      if tc.grad_ctx:
          params += get_parameters(self.ctx_tok_embed)
          params += get_parameters(self.ctx_pos_embed)
-      if phase == 2 or phase == 3:
+      if tc.grad_den:
          params += get_parameters(self.den_tok_embed)
          params += get_parameters(self.den_time_embed)
 
       for i, v in enumerate(self.layers):
          ctx_layer, time_layer, den_layer = v
-         if phase == 1 or phase == 3: params += ctx_layer.get_parameters(i+1 == self.n_layers)
-         if phase == 2 or phase == 3:
+         if tc.grad_ctx:
+            params += ctx_layer.get_parameters(i+1 == self.n_layers and (not tc.ctx_tok_loss))
+         if tc.grad_den:
             params += get_parameters(time_layer)
             params += get_parameters(den_layer)
 
-      if phase == 1:
+      if tc.ctx_tok_loss:
          params += get_parameters(self.ctx_class_head)
-      else:
+      if tc.den_tok_loss_orig or tc.den_tok_loss_pred:
          params += get_parameters(self.den_class_head)
 
       return params
@@ -260,7 +261,7 @@ def train(phase:int, scale:float=0.5):
    model = FusedTransformer(**Config.model_params.to_dict())
 
    type_name = os.path.basename(os.path.dirname(__file__))
-   if phase == 1 or True:
+   if phase == Config.start_phase:
       weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
    else:
       weights_folder = get_latest_folder()
@@ -271,9 +272,7 @@ def train(phase:int, scale:float=0.5):
                break
             elif text.lower().startswith("n"):
                raise RuntimeError("Avoiding overwriting previous run")
-
-   # if phase == 2 or phase == 3:
-   #    load_latest_weight(model, "model", phase=(phase-1))
+      load_latest_weight(model, "model", phase=(phase-1))
 
    all_params = get_parameters(model)
    train_params = model.get_parameters(phase)
