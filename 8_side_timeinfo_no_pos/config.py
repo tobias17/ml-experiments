@@ -3,17 +3,17 @@ from typing import Dict
 
 class ModelParams(Dictable):
    vocab_size   = 65
-   timesteps    = 200
-   time_deltas  = 100
-   ctx_pos_size = 256
+   timesteps    = 128
+   time_deltas  = 64
+   ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
-   n_layers     = 4
-   ctx_dim      = 256//2
-   den_dim      = 256//2
-   time_dim     = 320//2
+   n_layers     = 8
+   ctx_dim      = 256//4
+   den_dim      = 256//4
+   time_dim     = 320//4
    fusion_mult  = 1
-   ctx_heads    = 8
-   den_heads    = 8
+   ctx_heads    = 4
+   den_heads    = 4
    ctx_ff_mult  = 2
    den_ff_mult  = 2
 
@@ -56,7 +56,7 @@ class Phase2Train(Train):
 
 class Phase3Train(Train):
    learning_rate = 2**-13
-   batch_size = 40
+   batch_size = 320
    gen_count  = 64*10
 
    grad_ctx = True
