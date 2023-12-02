@@ -9,7 +9,7 @@ import tiktoken
 from config import Config
 from util import write_graph, Schedules
 from typing import Dict, Optional, List, Tuple, Union
-import time, datetime, os, shutil, math
+import time, datetime, os, shutil, math, json
 from tqdm import tqdm, trange # type: ignore
 
 # copied from tensor.py
@@ -252,24 +252,62 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 
-def train(phase:int):
+def train(phase:int, recover=False):
    tc = Config.train[phase]
 
    model = FusedTransformer(**Config.model_params.to_dict())
 
-   type_name = os.path.basename(os.path.dirname(__file__))
-   if phase == Config.start_phase:
-      weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
+   TS = Config.model_params.timesteps
+   BS = tc.batch_size
+   CS = Config.model_params.ctx_pos_size
+   DS = Config.model_params.den_pos_size
+   TD = Config.model_params.time_deltas
+
+   step, test_index = 0, 0
+   train_loss:List[float] = []
+   test_loss: List[float] = []
+   if phase == 1:
+      train_acc:List[float] = []
+      test_acc: List[float] = []
    else:
+      train_accs:List[List[float]] = [[] for _ in range(DS)]
+      test_accs: List[List[float]] = [[] for _ in range(DS)]
+      
+   if recover == True:
       weights_folder = get_latest_folder()
-      if len([f for f in os.listdir(weights_folder) if f.startswith(f"p{phase}_")]):
-         while True:
-            text = input(f"Files already detected for phase {phase}, continue? [y/n]: ")
-            if text.lower().startswith("y"):
-               break
-            elif text.lower().startswith("n"):
-               raise RuntimeError("Avoiding overwriting previous run")
-      load_latest_weight(model, "model", phase=(phase-1))
+      data_filepath = f"{weights_folder}/p{phase}_data.json"
+      if not os.path.exists(data_filepath):
+         raise ValueError(f"Could not find data file {data_filepath} with recover=True")
+      with open(data_filepath) as f:
+         data = json.load(f)
+         step = data["step"]
+         train_loss = data["train_loss"]
+         test_loss  = data["test_loss"]
+         if phase == 1:
+            train_acc = data["train_acc"]
+            test_acc = data["test_acc"]
+         else:
+            train_accs = data["train_acc"]
+            test_accs = data["test_acc"]
+      weights_filepath = f"{weights_folder}/" + Config.save_name.format(phase, step)
+      if not os.path.exists(weights_filepath):
+         raise ValueError(f"Could not find weights file {weights_filepath} with recover=True")
+      load_state_dict(model, safe_load(weights_filepath))
+      print(f"Recovering to Step {step} in Phase {phase} from {weights_folder}")
+   else:
+      if phase == Config.start_phase:
+         type_name = os.path.basename(os.path.dirname(__file__))
+         weights_folder = f"weights/{type_name}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
+      else:
+         weights_folder = get_latest_folder()
+         if len([f for f in os.listdir(weights_folder) if f.startswith(f"p{phase}_")]):
+            while True:
+               text = input(f"Files already detected for phase {phase}, continue? [y/n]: ")
+               if text.lower().startswith("y"):
+                  break
+               elif text.lower().startswith("n"):
+                  raise RuntimeError("Avoiding overwriting previous run")
+         load_latest_weight(model, "model", phase=(phase-1))
 
    all_params = get_parameters(model)
    train_params = model.get_parameters(phase)
@@ -283,22 +321,7 @@ def train(phase:int):
    all_alphas = make_alphas()
    X_train, X_test = load_train_test()
 
-   TS = Config.model_params.timesteps
-   BS = tc.batch_size
-   CS = Config.model_params.ctx_pos_size
-   DS = Config.model_params.den_pos_size
-   TD = Config.model_params.time_deltas
-
    s_time = time.time()
-   step, test_index = 0, 0
-   train_loss:List[float] = []
-   test_loss: List[float] = []
-   if phase == 1:
-      train_acc:List[float] = []
-      test_acc: List[float] = []
-   else:
-      train_accs:List[List[float]] = [[] for _ in range(DS)]
-      test_accs: List[List[float]] = [[] for _ in range(DS)]
    while True:
       np.random.seed(step if test_index < 2 else 1337)
       data = X_train if test_index <= 1 else X_test
@@ -400,6 +423,15 @@ def train(phase:int):
          main_filepath = f"{weights_folder}/{os.path.basename(__file__)}"
          if not os.path.exists(main_filepath):
             shutil.copyfile(__file__, main_filepath)
+         with open(f"{weights_folder}/p{phase}_data.json", "w") as f:
+            data = {
+               "step": step,
+               "train_loss": train_loss,
+               "test_loss": test_loss,
+               "train_acc": (train_acc if phase==1 else train_accs),
+               "test_acc": (test_acc if phase==1 else test_accs),
+            }
+            json.dump(data, f)
 
       if step % Config.train[phase].gen_every == 0:
          g_time = time.time()
@@ -451,7 +483,7 @@ def generate_ctx(count=8, model=None, start=text, archive=False):
       try:
          char = byte.decode()
       except Exception:
-         char = "<|?|>"
+         char = "<?>"
       all_output += char
 
       X_np = np.zeros((1,CS+1))
@@ -546,9 +578,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
    return decode(toks).decode() # type: ignore
 
 if __name__ == "__main__":
-   train(phase=1)
+   # train(phase=1)
    # print(generate_ctx(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
 
-   # train(phase=2)
+   train(phase=2)
    # train(phase=3)
    # print(generate_den(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
