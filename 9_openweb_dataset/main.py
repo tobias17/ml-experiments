@@ -578,9 +578,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
    return decode(toks).decode() # type: ignore
 
 if __name__ == "__main__":
-   # train(phase=1)
+   train(phase=1)
    # print(generate_ctx(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
 
-   train(phase=2)
+   # train(phase=2)
    # train(phase=3)
    # print(generate_den(count=64, model=FusedTransformer(**Config.model_params.to_dict())))

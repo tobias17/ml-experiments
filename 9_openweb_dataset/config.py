@@ -3,11 +3,11 @@ from typing import Dict
 
 class ModelParams(Dictable):
    vocab_size   = 50304
-   timesteps    = 256
+   timesteps    = 128
    time_deltas  = 64
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
-   n_layers     = 10
+   n_layers     = 12
    ctx_dim      = 768
    den_dim      = 768
    time_dim     = 320
@@ -18,16 +18,16 @@ class ModelParams(Dictable):
    den_ff_mult  = 2
 
 class Train:
-   learning_rate = 2**-14
+   learning_rate = 2**-16
    batch_size = 1
    test_every = 25
-   save_every = 2000
+   save_every = 1000
    gen_every  = 500
    gen_count  = 64
 
    grad_ctx = False
-   grad_den = False
    detach_ctx = False
+   grad_den = False
 
    ctx_tok_loss = False
    den_tok_loss_orig = False
@@ -35,8 +35,7 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   learning_rate = 2**-12
-   batch_size = 28
+   batch_size = 24
 
    grad_ctx = True
 
@@ -44,13 +43,10 @@ class Phase1Train(Train):
 
 class Phase2Train(Train):
    batch_size = 2
-   save_every = 50
 
-   grad_ctx = True
-   grad_den = True
    detach_ctx = True
+   grad_den = True
 
-   ctx_tok_loss = True
    den_tok_loss_orig = True
    den_tok_loss_pred = True
    den_tok_noise_loss = True
