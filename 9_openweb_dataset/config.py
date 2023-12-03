@@ -18,11 +18,11 @@ class ModelParams(Dictable):
    den_ff_mult  = 2
 
 class Train:
-   learning_rate = 2**-16
+   learning_rate = 2**-17
    batch_size = 1
-   test_every = 25
-   save_every = 1000
-   gen_every  = 500
+   test_every = 50
+   save_every = 2000
+   gen_every  = 1000
    gen_count  = 64
 
    grad_ctx = False
@@ -63,7 +63,7 @@ class Phase3Train(Train):
 
 class Config:
    dataset = "datasets/openweb_{0}.bin"
-   dropout = 0.2
+   dropout = 0.1
 
    model_params = ModelParams
    schedule = Schedules.SQRT
