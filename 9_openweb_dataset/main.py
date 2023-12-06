@@ -175,14 +175,14 @@ class FusedTransformer:
 
       return params
 
-   def forward_ctx_only(self, ctx_toks:Tensor) -> Tensor:
+   def forward_ctx_only(self, ctx_toks:Tensor, temperature:float=1.0) -> Tensor:
       x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
       for ctx_layer, _, _ in self.layers:
          x,_,_ = ctx_layer(x)
-      return self.ctx_class_head(x).log_softmax()
+      return self.ctx_predict(x, temperature)
 
-   def ctx_predict(self, ctx_latent:Tensor) -> Tensor:
-      return self.ctx_class_head(ctx_latent).log_softmax()
+   def ctx_predict(self, ctx_latent:Tensor, temperature:float=1.0) -> Tensor:
+      return (self.ctx_class_head(ctx_latent) / (temperature+1e-10)).softmax()
 
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
@@ -205,8 +205,8 @@ class FusedTransformer:
       
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
-   def estimate(self, den_latent:Tensor) -> Tensor:
-      return self.den_class_head(den_latent).log_softmax()
+   def estimate(self, den_latent:Tensor, temperature=1.0) -> Tensor:
+      return (self.den_class_head(den_latent) / (temperature+1e-10)).softmax()
 
 
 
@@ -457,7 +457,8 @@ Bate, I beseech you, widow Dido.
 ANTONIO:
 """
 
-def generate_ctx(count=8, model=None, start=text, archive=False):
+def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4):
+   np.random.seed(1337)
    load_train_test()
    if model is None:
       model = FusedTransformer(**Config.model_params.to_dict())
@@ -465,20 +466,20 @@ def generate_ctx(count=8, model=None, start=text, archive=False):
 
    CS = Config.model_params.ctx_pos_size
    all_output = start
-   start_i = len(all_output) - 1
 
    @TinyJit
    def jit(x):
-      return model.forward_ctx_only(x).realize()
+      return model.forward_ctx_only(x, temperature=temperature).realize()
 
    X = Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1)
+   start_i = X.shape[-1]-1
    X = X.pad( ((0,0), (0,CS-X.shape[-1])) )
    for i in trange(start_i, count+start_i):
       assert X.shape == (1,CS,)
 
       pull_i = min(i, CS-1)
-      pred = jit(X.realize())[:,pull_i:pull_i+1].argmax(axis=-1)
-      tok = int(pred.numpy().item() + 0.5)
+      probs_np = jit(X.realize())[0,pull_i,:].numpy()
+      tok = int(np.random.choice(len(probs_np), p=probs_np))
       byte = decode([tok])
       try:
          char = byte.decode()
@@ -489,17 +490,16 @@ def generate_ctx(count=8, model=None, start=text, archive=False):
       X_np = np.zeros((1,CS+1))
       X_np[:,:-1] = X.numpy()
       if i + 1 < CS:
-         X_np[:,i+1:i+2] = pred.numpy()
+         X_np[:,i+1:i+2] = tok
          X = Tensor(X_np[:,:-1], dtype=dtypes.float32, requires_grad=False)
       else:
-         X_np[:,-1:] = pred.numpy()
+         X_np[:,-1:] = tok
          X = Tensor(X_np[:,1:], dtype=dtypes.float32, requires_grad=False)
-      del pred
    
    del X
    return all_output
 
-def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False):
+def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
    global encode, decode
    load_train_test()
    all_alphas = make_alphas()
@@ -531,8 +531,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
 
    @TinyJit
    def jit(*args):
-      outputs = model(*[a.realize() for a in args])
-      return [o.realize() for o in outputs]
+      return model(*[a.realize() for a in args])[0].realize()
 
    toks = encode(all_output) # type: ignore
    start_i = len(toks) - DS
@@ -556,13 +555,14 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
 
       x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.den_dim)*(1-alphas)
 
-      e_t, _ = jit(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+      e_t = jit(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
       pred_x_0 = x_t - e_t
 
       while den_start_amount <= timestep_reduce:
          if start_i >= len(toks):
-            pred = model.estimate(pred_x_0)[0,0,0,:]
-            toks.append(int(pred.argmax(axis=-1).numpy().item() + 0.5))
+            probs_np = model.estimate(pred_x_0, temperature=temperature)[0,0,0,:].numpy()
+            tok = int(np.random.choice(len(probs_np), p=probs_np))
+            toks.append(tok)
          start_i += 1
          X, data_i = make_X(toks, start_i)
          pred_x_0 = pred_x_0[:,:,1:].cat(Tensor.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
@@ -578,9 +578,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
    return decode(toks).decode() # type: ignore
 
 if __name__ == "__main__":
-   train(phase=1)
-   # print(generate_ctx(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
+   # train(phase=1)
+   # print(generate_ctx(count=16))
 
    # train(phase=2)
    # train(phase=3)
-   # print(generate_den(count=64, model=FusedTransformer(**Config.model_params.to_dict())))
+   print(generate_den(count=64, temperature=0.0))
