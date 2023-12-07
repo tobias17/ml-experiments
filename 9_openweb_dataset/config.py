@@ -22,7 +22,7 @@ class Train:
    batch_size = 1
    test_every = 50
    save_every = 2000
-   gen_every  = 1000
+   gen_every  = 2000
    gen_count  = 64
 
    grad_ctx = False

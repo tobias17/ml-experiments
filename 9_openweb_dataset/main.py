@@ -575,12 +575,20 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
 
       x_0 = pred_x_0.realize().detach()
 
-   return decode(toks).decode() # type: ignore
+   output = ""
+   for tok in toks:
+      try:
+         if tok >= 50257:
+            tok = 10
+         output += decode([tok]).decode()
+      except Exception:
+         output += "<?>"
+   return output
 
 if __name__ == "__main__":
    # train(phase=1)
    # print(generate_ctx(count=16))
 
-   # train(phase=2)
+   train(phase=2)
    # train(phase=3)
-   print(generate_den(count=64, temperature=0.0))
+   # print(generate_den(count=64, temperature=0.4))
