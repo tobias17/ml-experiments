@@ -182,7 +182,7 @@ class FusedTransformer:
       return self.ctx_predict(x, temperature)
 
    def ctx_predict(self, ctx_latent:Tensor, temperature:float=1.0) -> Tensor:
-      return (self.ctx_class_head(ctx_latent) / (temperature+1e-10)).softmax()
+      return (self.ctx_class_head(ctx_latent) / (temperature+1e-10)).log_softmax()
 
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
@@ -206,7 +206,7 @@ class FusedTransformer:
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
    def estimate(self, den_latent:Tensor, temperature=1.0) -> Tensor:
-      return (self.den_class_head(den_latent) / (temperature+1e-10)).softmax()
+      return (self.den_class_head(den_latent) / (temperature+1e-10)).log_softmax()
 
 
 
@@ -311,11 +311,13 @@ def train(phase:int, recover=False):
 
    all_params = get_parameters(model)
    train_params = model.get_parameters(phase)
-   for label, params in (("Model Params:", all_params), ("Train Params:", train_params)):
+   print(f"\nPhase {phase}")
+   for label, params in (("Train Params:", train_params), ("Model Params:", all_params)):
       sz = 0
       for p in params:
          sz += prod(p.shape)
       print(f"{label} {sz/1e6:.2f}m")
+   print("="*25)
    opt = Adam(train_params, tc.learning_rate)
 
    all_alphas = make_alphas()
@@ -353,6 +355,8 @@ def train(phase:int, recover=False):
 
          e_t, ctx_latent = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
+         
+         output = model.estimate(pred_x_0)
 
          if tc.ctx_tok_loss:
             ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
@@ -360,9 +364,9 @@ def train(phase:int, recover=False):
          if tc.den_tok_loss_orig:
             loss = loss + model.estimate(x_0).sparse_categorical_crossentropy(Y)
          if tc.den_tok_loss_pred:
-            loss = loss + (output:=model.estimate(pred_x_0)).sparse_categorical_crossentropy(Y)
+            loss = loss + output.sparse_categorical_crossentropy(Y)
          if tc.den_tok_noise_loss:
-            loss = loss + (pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape)
+            loss = loss + ((pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape))
 
          del attn_mask, x_0, pred_x_0, x_t, e_t
       elif tc.ctx_tok_loss:
@@ -580,7 +584,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
       try:
          if tok >= 50257:
             tok = 10
-         output += decode([tok]).decode()
+         output += decode([tok]).decode() # type: ignore
       except Exception:
          output += "<?>"
    return output
@@ -589,6 +593,6 @@ if __name__ == "__main__":
    # train(phase=1)
    # print(generate_ctx(count=16))
 
-   train(phase=2)
+   train(phase=2, recover=False)
    # train(phase=3)
    # print(generate_den(count=64, temperature=0.4))
