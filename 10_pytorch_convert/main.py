@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional
+from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU
 from torch.optim import Adam
 import tiktoken
 import numpy as np
@@ -96,15 +96,15 @@ class AttentionBlock:
 class TimeFusion:
    def __init__(self, channels, time_channels, emb_channels):
       self.in_layers = Sequential(
-         Tensor.silu,
+         SiLU(),
          Linear(channels, emb_channels),
       )
       self.emb_layers = Sequential(
-         Tensor.silu,
+         SiLU(),
          Linear(time_channels, emb_channels),
       )
       self.out_layers = Sequential(
-         Tensor.silu,
+         SiLU(),
          Linear(emb_channels, channels),
       )
    def __call__(self, x:Tensor, time_emb:Tensor):
@@ -114,7 +114,7 @@ def timestep_embedding(timesteps, dim, max_period=10000) -> Tensor:
   half = dim // 2
   freqs = (-math.log(max_period) * torch.arange(half) / half).exp()
   args = timesteps * freqs
-  return torch.cat(args.cos(), args.sin(), dim=-1)
+  return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
 class FusedTransformer:
    def __init__(self, vocab_size:int, timesteps:int, time_deltas:int, ctx_pos_size:int, den_pos_size:int, n_layers:int, ctx_dim:int, den_dim:int, time_dim:int, fusion_mult:int, ctx_heads:int, den_heads:int, ctx_ff_mult:int, den_ff_mult:int):
@@ -122,11 +122,11 @@ class FusedTransformer:
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
       self.den_tok_embed  = Embedding(den_pos_size, den_dim)
-      self.den_time_embed = [
+      self.den_time_embed = Sequential(
          Linear(time_dim, den_dim*2),
-         Tensor.silu,
+         SiLU(),
          Linear(den_dim*2, den_dim*2),
-      ]
+      )
       self.den_dim, self.time_dim = den_dim, time_dim
 
       self.layers: List[Tuple[AttentionBlock,TimeFusion,AttentionBlock]] = [
@@ -167,7 +167,7 @@ class FusedTransformer:
       return params
 
    def forward_ctx_only(self, ctx_toks:Tensor, temperature:float=1.0) -> Tensor:
-      x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
+      x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
       for ctx_layer, _, _ in self.layers:
          x,_,_ = ctx_layer(x)
       return self.ctx_predict(x, temperature)
@@ -178,9 +178,9 @@ class FusedTransformer:
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
 
-   def __call__(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tensor:
-      ctx_latent  = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(Tensor.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
-      time_latent = timestep_embedding(timesteps.reshape((-1,1)), self.time_dim).sequential(self.den_time_embed)
+   def __call__(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tuple[Tensor, Tensor]:
+      ctx_latent  = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
+      time_latent = self.den_time_embed(timestep_embedding(timesteps.reshape((-1,1)), self.time_dim))
 
       B,T,DS,_ = attn_mask.shape
       den_latent = den_latent.reshape(-1,DS,self.den_dim)
@@ -201,6 +201,7 @@ class FusedTransformer:
 
 
 
+import matplotlib.pyplot as plt # type: ignore
 
 def make_alphas(show=False) -> np.ndarray:
    T = Config.model_params.timesteps
@@ -213,7 +214,6 @@ def make_alphas(show=False) -> np.ndarray:
       else:
          raise NotImplementedError()
    if show:
-      import matplotlib.pyplot as plt
       plt.plot(np.arange(T), a)
       plt.show()
    return a
@@ -322,12 +322,12 @@ def train(phase:int, recover=False):
       index = np.random.randint(0, data.shape[0]-CS-DS, size=BS)
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
-      X = Tensor(X_tok, dtype=dtypes.float32, requires_grad=False)
+      X = Tensor(X_tok, requires_grad=False)
 
       loss = Tensor.zeros((1)).sum()
       if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok, dtype=dtypes.float32)
+         Y = Tensor(Y_tok)
 
          diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD // 2
 
@@ -338,11 +338,11 @@ def train(phase:int, recover=False):
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
          alphas_np = alphas
-         alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim)
+         alphas = Tensor(alphas, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim)
 
-         attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
+         attn_mask = Tensor.ones(CS,CS).tril(0).cast(torch.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
          x_0 = model.make_x_0_from(Y.detach())
-         x_t = x_0*alphas + ((1-alphas)*Tensor.randn(*x_0.shape)).detach()
+         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape)).detach()
 
          e_t, ctx_latent = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
