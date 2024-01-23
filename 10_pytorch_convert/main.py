@@ -9,6 +9,10 @@ from util import write_graph, Schedules
 from typing import Dict, Optional, List, Tuple, Union
 import time, datetime, os, shutil, math, json
 from tqdm import tqdm, trange # type: ignore
+from functools import reduce
+
+def prod(collection):
+   return reduce(lambda a,b: a*b, collection, 1)
 
 class SelfAttention:
    def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout, is_causal=False):
@@ -322,9 +326,9 @@ def train(phase:int, recover=False):
       index = np.random.randint(0, data.shape[0]-CS-DS, size=BS)
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
-      X = Tensor(X_tok, requires_grad=False)
+      X = Tensor(X_tok).detach()
 
-      loss = Tensor.zeros((1)).sum()
+      loss = torch.zeros((1)).sum()
       if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok)
@@ -337,14 +341,13 @@ def train(phase:int, recover=False):
             ts = min(diff_start_amount + i*TD, TS - 1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
-         alphas_np = alphas
-         alphas = Tensor(alphas, requires_grad=False).reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim)
+         alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim)
 
-         attn_mask = Tensor.ones(CS,CS).tril(0).cast(torch.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
+         attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
          x_0 = model.make_x_0_from(Y.detach())
          x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape)).detach()
 
-         e_t, ctx_latent = model(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask, detach_ctx=tc.detach_ctx)
+         e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach(), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
          
          output = model.estimate(pred_x_0)
@@ -365,11 +368,9 @@ def train(phase:int, recover=False):
          Y = Tensor(Y_tok, dtype=dtypes.float32)
          
          output = model.forward_ctx_only(X)
-         output.realize()
          loss = loss + output.sparse_categorical_crossentropy(Y)
 
       if test_index == 0:
-         loss.realize()
          opt.zero_grad()
          loss.backward()
          opt.step()
@@ -379,11 +380,11 @@ def train(phase:int, recover=False):
          
          if phase == 1:
             acc_l = test_acc if test_index==2 else train_acc
-            acc_l.append((output.argmax(axis=-1)==Y).mean().numpy().item())
+            acc_l.append((torch.argmax(output, dim=-1)==Y).mean().numpy().item())
          else:
             accs_l = test_accs if test_index==2 else train_accs
             for i in range(DS):
-               accs_l[i].append((output[:,:,i:i+1].argmax(axis=-1)==Y[:,:,i:i+1]).mean().numpy().item())
+               accs_l[i].append((torch.argmax(output[:,:,i:i+1], dim=-1)==Y[:,:,i:i+1]).mean().numpy().item())
 
       del X, Y, output, loss
 
@@ -518,11 +519,11 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
       data = np.zeros((CS,))-1
       data[:start_i] = np.array(toks[:start_i])
       data_i = start_i
-      return Tensor(data, dtype=dtypes.float32, requires_grad=False).reshape(1,-1), data_i
+      return Tensor(data).reshape(1,-1), data_i
    
    def make_x_0(toks, start_i: int) -> Tensor:
       assert start_i < len(toks)
-      return model.make_x_0_from(Tensor(toks[start_i:], dtype=dtypes.float32, requires_grad=False).reshape(1,-1))
+      return model.make_x_0_from(Tensor(toks[start_i:]).reshape(1,-1))
 
    @TinyJit
    def jit(*args):
@@ -544,13 +545,13 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
          ts = min(den_start_amount + i*TD, TS-1)
          alphas[i] = all_alphas[int(ts)]
          timesteps[i] = ts
-      alphas = Tensor(alphas, dtype=dtypes.float32, requires_grad=False).reshape(1,1,DS,1)
-      attn_mask = Tensor.ones(CS,CS).tril(0).cast(dtypes.bool).reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
-      attn_mask = Tensor(attn_mask.realize().numpy())
+      alphas = Tensor(alphas).reshape(1,1,DS,1)
+      attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
+      attn_mask = Tensor(attn_mask.numpy())
 
-      x_t = x_0*alphas + Tensor.randn(BS,1,Config.model_params.den_dim)*(1-alphas)
+      x_t = x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)
 
-      e_t = jit(x_t, X, Tensor(timesteps, dtype=dtypes.float32, requires_grad=False), attn_mask)
+      e_t = jit(x_t, X, Tensor(timesteps), attn_mask)
       pred_x_0 = x_t - e_t
 
       while den_start_amount <= timestep_reduce:
@@ -560,7 +561,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             toks.append(tok)
          start_i += 1
          X, data_i = make_X(toks, start_i)
-         pred_x_0 = pred_x_0[:,:,1:].cat(Tensor.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
+         pred_x_0 = pred_x_0[:,:,1:].cat(torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
          den_start_amount += TD
       den_start_amount -= timestep_reduce
 
