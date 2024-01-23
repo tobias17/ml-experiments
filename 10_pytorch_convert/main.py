@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU
+from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, CrossEntropyLoss
 from torch.optim import Adam
 import tiktoken
 import numpy as np
@@ -317,6 +317,7 @@ def train(phase:int, recover=False):
 
    all_alphas = make_alphas()
    X_train, X_test = load_train_test()
+   loss_fnx = CrossEntropyLoss()
 
    s_time = time.time()
    while True:
@@ -354,21 +355,21 @@ def train(phase:int, recover=False):
 
          if tc.ctx_tok_loss:
             ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
-            loss = loss + model.ctx_predict(ctx_latent).sparse_categorical_crossentropy(Tensor(ctx_Y_tok, dtype=dtypes.float32))
+            loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok))
          if tc.den_tok_loss_orig:
-            loss = loss + model.estimate(x_0).sparse_categorical_crossentropy(Y)
+            loss = loss + loss_fnx(model.estimate(x_0), Y)
          if tc.den_tok_loss_pred:
-            loss = loss + output.sparse_categorical_crossentropy(Y)
+            loss = loss + loss_fnx(output, (Y))
          if tc.den_tok_noise_loss:
             loss = loss + ((pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape))
 
          del attn_mask, x_0, pred_x_0, x_t, e_t
       elif tc.ctx_tok_loss:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok, dtype=dtypes.float32)
+         Y = Tensor(Y_tok)
          
          output = model.forward_ctx_only(X)
-         loss = loss + output.sparse_categorical_crossentropy(Y)
+         loss = loss + loss_fnx(output, Y)
 
       if test_index == 0:
          opt.zero_grad()
@@ -525,10 +526,6 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
       assert start_i < len(toks)
       return model.make_x_0_from(Tensor(toks[start_i:]).reshape(1,-1))
 
-   @TinyJit
-   def jit(*args):
-      return model(*[a.realize() for a in args])[0].realize()
-
    toks = encode(all_output) # type: ignore
    start_i = len(toks) - DS
    assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
@@ -551,7 +548,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
 
       x_t = x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)
 
-      e_t = jit(x_t, X, Tensor(timesteps), attn_mask)
+      e_t = model(x_t, X, Tensor(timesteps), attn_mask)[0]
       pred_x_0 = x_t - e_t
 
       while den_start_amount <= timestep_reduce:
@@ -561,7 +558,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             toks.append(tok)
          start_i += 1
          X, data_i = make_X(toks, start_i)
-         pred_x_0 = pred_x_0[:,:,1:].cat(torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]), dim=-2)
+         pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
          den_start_amount += TD
       den_start_amount -= timestep_reduce
 
@@ -569,7 +566,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
          new_x_0 = make_x_0(toks, start_i)
          pred_x_0[:,:,:len(toks)-start_i] = new_x_0.reshape((1,*new_x_0.shape)).detach()
 
-      x_0 = pred_x_0.realize().detach()
+      x_0 = pred_x_0.detach()
 
    output = ""
    for tok in toks:
