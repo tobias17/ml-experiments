@@ -20,10 +20,13 @@ class ModelParams(Dictable):
 class Train:
    learning_rate = 2**-16
    batch_size = 1
-   test_every = 50
+   test_every = 200
    save_every = 2000
    gen_every  = 2000
    gen_count  = 64
+
+   # FIXME: remove
+   gen_every = 20
 
    grad_ctx = False
    detach_ctx = False
@@ -36,7 +39,6 @@ class Train:
 
 class Phase1Train(Train):
    batch_size = 48
-   test_every = 100
 
    grad_ctx = True
 

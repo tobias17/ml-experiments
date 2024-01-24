@@ -46,7 +46,7 @@ class CrossAttention(Module):
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.num_heads = n_heads
       self.head_size = d_head
-      self.to_out = [Linear(n_heads*d_head, query_dim)]
+      self.to_out = Linear(n_heads*d_head, query_dim)
       self.dropout = Dropout(dropout)
    def forward(self, x:Tensor, attn_mask:Tensor, k:Tensor, v:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
       fnx = lambda y: y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2)
@@ -54,7 +54,7 @@ class CrossAttention(Module):
       attn_mask = attn_mask.reshape(attn_mask.shape[0], 1, *attn_mask.shape[1:]).expand((attn_mask.shape[0], self.num_heads, *attn_mask.shape[1:]))
       attention = self.dropout(functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
-      return h_.sequential(self.to_out), k, v
+      return self.to_out(h_), k, v
 
 class GEGLU(Module):
    def __init__(self, dim_in, dim_out):
@@ -132,7 +132,7 @@ class FusedTransformer(Module):
       self.ctx_tok_embed = Embedding(vocab_size, ctx_dim)
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
-      self.den_tok_embed  = Embedding(den_pos_size, den_dim)
+      self.den_tok_embed  = Embedding(vocab_size, den_dim)
       self.den_time_embed = Sequential(
          Linear(time_dim, den_dim*2),
          SiLU(),
@@ -337,7 +337,10 @@ def train(phase:int, token_ptr=0, recover=False):
    all_alphas = make_alphas()
    X_train, X_test = load_train_test()
    cross_entroy = CrossEntropyLoss(reduce="none")
-   loss_fnx = lambda x,y: cross_entroy(x.permute((0,2,1)), y).sum()
+   def loss_fnx(x, y):
+      x = x.reshape(-1,*x.shape[-2:]).permute((0,2,1))
+      y = y.reshape(-1,*y.shape[-1:])
+      return cross_entroy(x, y).sum()
 
    s_time = time.time()
    while True:
@@ -357,7 +360,7 @@ def train(phase:int, token_ptr=0, recover=False):
       loss = torch.zeros((1)).sum()
       if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok).to(device)
+         Y = Tensor(Y_tok).long().detach().to(device)
 
          diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD // 2
 
@@ -367,13 +370,13 @@ def train(phase:int, token_ptr=0, recover=False):
             ts = min(diff_start_amount + i*TD, TS - 1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
-         alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim)
+         alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(device) # type: ignore
 
-         attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
-         x_0 = model.make_x_0_from(Y.detach())
-         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape)).detach()
+         attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
+         x_0 = model.make_x_0_from(Y)
+         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(device)).detach()
 
-         e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach(), attn_mask, detach_ctx=tc.detach_ctx)
+         e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(device), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
          
          output = model.estimate(pred_x_0)
@@ -410,7 +413,7 @@ def train(phase:int, token_ptr=0, recover=False):
          else:
             accs_l = test_accs if test_index==2 else train_accs
             for i in range(DS):
-               accs_l[i].append((torch.argmax(output[:,:,i:i+1], dim=-1)==Y[:,:,i:i+1]).mean().detach().cpu().numpy().item())
+               accs_l[i].append((torch.argmax(output[:,:,i:i+1], dim=-1)==Y[:,:,i:i+1]).float().mean().detach().cpu().numpy().item())
 
       del X, Y, output, loss
 
@@ -601,9 +604,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
    return output
 
 if __name__ == "__main__":
-   train(phase=1)
+   # train(phase=1)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=False)
+   train(phase=2, recover=False)
    # train(phase=3)
    # print(generate_den(count=64, temperature=0.4))
