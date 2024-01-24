@@ -16,6 +16,7 @@ def prod(collection):
 
 class SelfAttention(Module):
    def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout, is_causal=False):
+      super().__init__()
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.to_k = Linear(query_dim, n_heads*d_head, bias=False)
       self.to_v = Linear(query_dim, n_heads*d_head, bias=False)
@@ -37,6 +38,7 @@ class SelfAttention(Module):
 
 class CrossAttention(Module):
    def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout):
+      super().__init__()
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.num_heads = n_heads
       self.head_size = d_head
@@ -52,6 +54,7 @@ class CrossAttention(Module):
 
 class GEGLU(Module):
    def __init__(self, dim_in, dim_out):
+      super().__init__()
       self.proj = Linear(dim_in, dim_out * 2)
       self.dim_out = dim_out
    def forward(self, x:Tensor) -> Tensor:
@@ -60,6 +63,7 @@ class GEGLU(Module):
 
 class FeedForward(Module):
    def __init__(self, dim, mult=4):
+      super().__init__()
       self.net = Sequential(
          GEGLU(dim, dim*mult),
          Linear(dim*mult, dim),
@@ -69,6 +73,7 @@ class FeedForward(Module):
 
 class AttentionBlock(Module):
    def __init__(self, dim, n_heads, d_head, ff_mult, dropout=Config.dropout, is_causal=False, cross_attn=True):
+      super().__init__()
       self.norm1 = LayerNorm(dim)
       self.attn1 = SelfAttention(dim, n_heads, d_head, is_causal=is_causal)
       self.cross_attn = cross_attn
@@ -94,6 +99,7 @@ class AttentionBlock(Module):
 
 class TimeFusion(Module):
    def __init__(self, channels, time_channels, emb_channels):
+      super().__init__()
       self.in_layers = Sequential(
          SiLU(),
          Linear(channels, emb_channels),
@@ -117,6 +123,7 @@ def timestep_embedding(timesteps, dim, max_period=10000) -> Tensor:
 
 class FusedTransformer(Module):
    def __init__(self, vocab_size:int, timesteps:int, time_deltas:int, ctx_pos_size:int, den_pos_size:int, n_layers:int, ctx_dim:int, den_dim:int, time_dim:int, fusion_mult:int, ctx_heads:int, den_heads:int, ctx_ff_mult:int, den_ff_mult:int):
+      super().__init__()
       self.ctx_tok_embed = Embedding(vocab_size, ctx_dim)
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
@@ -247,7 +254,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 
-def train(phase:int, recover=False):
+def train(phase:int, token_ptr=0, recover=False):
    tc = Config.train[phase]
 
    model = FusedTransformer(**Config.model_params.to_dict())
@@ -276,6 +283,7 @@ def train(phase:int, recover=False):
       with open(data_filepath) as f:
          data = json.load(f)
          step = data["step"]
+         token_ptr  = data["token_ptr"]
          train_loss = data["train_loss"]
          test_loss  = data["test_loss"]
          if phase == 1:
@@ -305,7 +313,7 @@ def train(phase:int, recover=False):
          load_latest_weight(model, "model", phase=(phase-1))
 
    model.freeze_parameters(phase)
-   all_params = model.parameters()
+   all_params = list(model.parameters())
    train_params = [p for p in all_params if p.requires_grad]
    print(f"\nPhase {phase}")
    for label, params in (("Train Params:", train_params), ("Model Params:", all_params)):
@@ -323,9 +331,14 @@ def train(phase:int, recover=False):
    s_time = time.time()
    while True:
       np.random.seed(step if test_index < 2 else 1337)
-      data = X_train if test_index <= 1 else X_test
-      
-      index = np.random.randint(0, data.shape[0]-CS-DS, size=BS)
+      if test_index <= 1:
+         data = X_train
+         index = [token_ptr+CS*i for i in range(BS)]
+         if test_index == 1:
+            token_ptr += CS*BS
+      else:
+         data = X_test
+         index = [CS*i for i in range(BS)]
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
       X = Tensor(X_tok).detach()
@@ -424,6 +437,7 @@ def train(phase:int, recover=False):
          with open(f"{weights_folder}/p{phase}_data.json", "w") as f:
             data = {
                "step": step,
+               "token_ptr": token_ptr,
                "train_loss": train_loss,
                "test_loss": test_loss,
                "train_acc": (train_acc if phase==1 else train_accs),
@@ -580,9 +594,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
    return output
 
 if __name__ == "__main__":
-   # train(phase=1)
+   train(phase=1)
    # print(generate_ctx(count=16))
 
-   train(phase=2, recover=False)
+   # train(phase=2, recover=False)
    # train(phase=3)
    # print(generate_den(count=64, temperature=0.4))
