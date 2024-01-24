@@ -122,7 +122,7 @@ class TimeFusion(Module):
 
 def timestep_embedding(timesteps, dim, max_period=10000) -> Tensor:
   half = dim // 2
-  freqs = (-math.log(max_period) * torch.arange(half) / half).exp()
+  freqs = (-math.log(max_period) * torch.arange(half) / half).exp().to(device)
   args = timesteps * freqs
   return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
@@ -469,7 +469,10 @@ def train(phase:int, token_ptr=0, recover=False):
          if not os.path.exists(gen_folder):
             os.makedirs(gen_folder)
          with open(f"{gen_folder}/text_{step}.txt", "w") as f:
-            f.write(text)
+            try:
+               f.write(text)
+            except Exception:
+               print(f"Failed to write text to file:\n{text}")
          s_time += (time.time() - g_time)
 
 
@@ -522,91 +525,92 @@ def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4
       return all_output
 
 def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
-   global encode, decode
-   load_train_test()
-   all_alphas = make_alphas()
-   if model is None:
-      model = FusedTransformer(**Config.model_params.to_dict())
-      load_latest_weight(model, "model", archive)
-   
-   count = int(count * (Config.model_params.time_deltas / timestep_reduce))
+   with torch.no_grad():
 
-   BS = 1
-   TS = Config.model_params.timesteps
-   CS = Config.model_params.ctx_pos_size
-   DS = Config.model_params.den_pos_size
-   TD = Config.model_params.time_deltas
-   all_output = start
+      global encode, decode
+      load_train_test()
+      all_alphas = make_alphas()
+      if model is None:
+         model = FusedTransformer(**Config.model_params.to_dict())
+         load_latest_weight(model, "model", archive)
+      
+      count = int(count * (Config.model_params.time_deltas / timestep_reduce))
 
-   def make_X(toks, start_i):
-      if len(toks) > CS:
-         toks = toks[-CS:]
-         start_i = CS
-      data = np.zeros((CS,))-1
-      data[:start_i] = np.array(toks[:start_i])
-      data_i = start_i
-      return Tensor(data).reshape(1,-1), data_i
-   
-   def make_x_0(toks, start_i: int) -> Tensor:
-      assert start_i < len(toks)
-      return model.make_x_0_from(Tensor(toks[start_i:]).reshape(1,-1))
+      BS = 1
+      TS = Config.model_params.timesteps
+      CS = Config.model_params.ctx_pos_size
+      DS = Config.model_params.den_pos_size
+      TD = Config.model_params.time_deltas
+      all_output = start
 
-   toks = encode(all_output) # type: ignore
-   start_i = len(toks) - DS
-   assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
-   x_0 = make_x_0(toks, start_i)
-   z_0 = x_0
-   den_start_amount = timestep_reduce
-   X, data_i = make_X(toks, start_i)
+      def make_X(toks, start_i):
+         if len(toks) > CS:
+            toks = toks[-CS:]
+            start_i = CS
+         data = np.zeros((CS,))
+         data[:start_i] = np.array(toks[:start_i])
+         data_i = start_i
+         return Tensor(data).reshape(1,-1).long().to(device), data_i
+      
+      def make_x_0(toks, start_i: int) -> Tensor:
+         assert start_i < len(toks)
+         return model.make_x_0_from(Tensor(toks[start_i:]).long().reshape(1,-1).to(device))
 
-   for i in trange(count):
+      toks = encode(all_output) # type: ignore
+      start_i = len(toks) - DS
+      assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
+      x_0 = make_x_0(toks, start_i).to(device)
+      den_start_amount = timestep_reduce
+      X, data_i = make_X(toks, start_i)
 
-      alphas = np.ones((DS,), dtype=np.float32)
-      timesteps = np.zeros((DS,), dtype=np.float32)
-      for i in range(DS):
-         ts = min(den_start_amount + i*TD, TS-1)
-         alphas[i] = all_alphas[int(ts)]
-         timesteps[i] = ts
-      alphas = Tensor(alphas).reshape(1,1,DS,1)
-      attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
-      attn_mask = Tensor(attn_mask.numpy())
+      for i in trange(count):
 
-      x_t = x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)
+         alphas = np.ones((DS,), dtype=np.float32)
+         timesteps = np.zeros((DS,), dtype=np.float32)
+         for i in range(DS):
+            ts = min(den_start_amount + i*TD, TS-1)
+            alphas[i] = all_alphas[int(ts)]
+            timesteps[i] = ts
+         alphas = Tensor(alphas).reshape(1,1,DS,1).to(device)
+         attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
+         attn_mask = Tensor(attn_mask.cpu().numpy()).to(device)
 
-      e_t = model(x_t, X, Tensor(timesteps), attn_mask)[0]
-      pred_x_0 = x_t - e_t
+         x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(device)
 
-      while den_start_amount <= timestep_reduce:
-         if start_i >= len(toks):
-            probs_np = model.estimate(pred_x_0, temperature=temperature)[0,0,0,:].numpy()
-            tok = int(np.random.choice(len(probs_np), p=probs_np))
-            toks.append(tok)
-         start_i += 1
-         X, data_i = make_X(toks, start_i)
-         pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
-         den_start_amount += TD
-      den_start_amount -= timestep_reduce
+         e_t = model(x_t, X, Tensor(timesteps).long().to(device), attn_mask)[0]
+         pred_x_0 = x_t - e_t
 
-      if start_i < len(toks):
-         new_x_0 = make_x_0(toks, start_i)
-         pred_x_0[:,:,:len(toks)-start_i] = new_x_0.reshape((1,*new_x_0.shape)).detach()
+         while den_start_amount <= timestep_reduce:
+            if start_i >= len(toks):
+               probs_np = model.estimate(pred_x_0, temperature=temperature, use_log=False)[0,0,0,:].cpu().numpy()
+               tok = int(np.random.choice(len(probs_np), p=probs_np))
+               toks.append(tok)
+            start_i += 1
+            X, data_i = make_X(toks, start_i)
+            pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
+            den_start_amount += TD
+         den_start_amount -= timestep_reduce
 
-      x_0 = pred_x_0.detach()
+         if start_i < len(toks):
+            new_x_0 = make_x_0(toks, start_i)
+            pred_x_0[:,:,:len(toks)-start_i] = new_x_0.reshape((1,*new_x_0.shape)).detach()
 
-   output = ""
-   for tok in toks:
-      try:
-         if tok >= 50257:
-            tok = 10
-         output += decode([tok]).decode() # type: ignore
-      except Exception:
-         output += "<?>"
-   return output
+         x_0 = pred_x_0.detach()
+
+      output = ""
+      for tok in toks:
+         try:
+            if tok >= 50257:
+               tok = 10
+            output += decode([tok]).decode() # type: ignore
+         except Exception:
+            output += "<?>"
+      return output
 
 if __name__ == "__main__":
    # train(phase=1)
    # print(generate_ctx(count=16))
 
-   train(phase=2, recover=False)
-   # train(phase=3)
+   # train(phase=2, recover=False)
+   train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))

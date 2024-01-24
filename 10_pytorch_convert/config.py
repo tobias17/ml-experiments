@@ -26,6 +26,8 @@ class Train:
    gen_count  = 64
 
    # FIXME: remove
+   test_every = 20
+   save_every = 20
    gen_every = 20
 
    grad_ctx = False
