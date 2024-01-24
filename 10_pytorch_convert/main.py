@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, CrossEntropyLoss, Module
+from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, GELU, CrossEntropyLoss, Module
 from torch.optim import Adam
 import tiktoken
 import numpy as np
@@ -22,7 +22,7 @@ class SelfAttention(Module):
       self.to_v = Linear(query_dim, n_heads*d_head, bias=False)
       self.num_heads = n_heads
       self.head_size = d_head
-      self.to_out = [Linear(n_heads*d_head, query_dim)]
+      self.to_out = Linear(n_heads*d_head, query_dim)
       self.dropout = Dropout(dropout)
       self.is_causal = is_causal
    def forward(self, x:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
@@ -30,7 +30,7 @@ class SelfAttention(Module):
       q,k,v = [y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2) for y in (q,k,v)]
       attention = self.dropout(functional.scaled_dot_product_attention(q, k, v, is_causal=self.is_causal)).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
-      return h_.sequential(self.to_out),k,v
+      return self.to_out(h_),k,v
    def freeze_parameters(self, is_last:bool):
       if is_last:
          for param in [self.to_q.parameters()] + [self.to_out.parameters()]:
@@ -57,9 +57,10 @@ class GEGLU(Module):
       super().__init__()
       self.proj = Linear(dim_in, dim_out * 2)
       self.dim_out = dim_out
+      self.act = GELU()
    def forward(self, x:Tensor) -> Tensor:
       x, gate = self.proj(x).chunk(2, dim=-1)
-      return x * gate.gelu()
+      return x * self.act(gate)
 
 class FeedForward(Module):
    def __init__(self, dim, mult=4):
@@ -82,14 +83,14 @@ class AttentionBlock(Module):
          self.attn2 = CrossAttention(dim, n_heads, d_head)
       self.norm3 = LayerNorm(dim)
       self.ff    = FeedForward(dim, mult=ff_mult)
-      self.dropout = dropout
+      self.dropout = Dropout(dropout)
    def forward(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
       h,k_,v_ = self.attn1(self.norm1(x))
       x = x + h
       if self.cross_attn:
          h,_,_ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
          x = x + h
-      x = self.ff(self.norm3(x)).dropout(self.dropout) + x
+      x = self.dropout(self.ff(self.norm3(x))) + x
       return x, k_, v_
    def freeze_parameters(self, is_last:bool):
       self.attn1.freeze_parameters(is_last)
@@ -184,7 +185,7 @@ class FusedTransformer(Module):
       return self.ctx_predict(x, temperature)
 
    def ctx_predict(self, ctx_latent:Tensor, temperature:float=1.0) -> Tensor:
-      return (self.ctx_class_head(ctx_latent) / (temperature+1e-10)).log_softmax()
+      return torch.log_softmax(self.ctx_class_head(ctx_latent) / (temperature+1e-10), dim=-1)
 
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
@@ -326,7 +327,8 @@ def train(phase:int, token_ptr=0, recover=False):
 
    all_alphas = make_alphas()
    X_train, X_test = load_train_test()
-   loss_fnx = CrossEntropyLoss()
+   cross_entroy = CrossEntropyLoss(reduce="none")
+   loss_fnx = lambda x,y: cross_entroy(x.permute((0,2,1)), y).sum()
 
    s_time = time.time()
    while True:
@@ -340,8 +342,8 @@ def train(phase:int, token_ptr=0, recover=False):
          data = X_test
          index = [CS*i for i in range(BS)]
 
-      X_tok = np.array([data[i:i+CS] for i in index], dtype=np.float32)
-      X = Tensor(X_tok).detach()
+      X_tok = np.array([data[i:i+CS] for i in index], dtype=np.int32)
+      X = Tensor(X_tok).int().detach()
 
       loss = torch.zeros((1)).sum()
       if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
@@ -379,8 +381,8 @@ def train(phase:int, token_ptr=0, recover=False):
 
          del attn_mask, x_0, pred_x_0, x_t, e_t
       elif tc.ctx_tok_loss:
-         Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok)
+         Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
+         Y = Tensor(Y_tok).long()
          
          output = model.forward_ctx_only(X)
          loss = loss + loss_fnx(output, Y)
