@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, GELU, CrossEntropyLoss, Module
+from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, GELU, CrossEntropyLoss, Module, LogSoftmax, Softmax
 from torch.optim import Adam
 import tiktoken
 import numpy as np
@@ -10,6 +10,10 @@ from typing import Dict, Optional, List, Tuple, Union
 import time, datetime, os, shutil, math, json
 from tqdm import tqdm, trange # type: ignore
 from functools import reduce
+from safetensors.torch import load_model, save_model
+
+device = "cuda"
+torch.set_default_device(device)
 
 def prod(collection):
    return reduce(lambda a,b: a*b, collection, 1)
@@ -147,6 +151,9 @@ class FusedTransformer(Module):
 
       self.ctx_class_head = Linear(ctx_dim, vocab_size)
       self.den_class_head = Linear(den_dim, vocab_size)
+
+      self.log_softmax = LogSoftmax(dim=-1)
+      self.softmax = Softmax(dim=-1)
    
    def freeze_parameters(self, phase:int) -> None:
       tc = Config.train[phase]
@@ -178,14 +185,15 @@ class FusedTransformer(Module):
          for param in module.parameters():
             param.requires_grad = False
 
-   def forward_ctx_only(self, ctx_toks:Tensor, temperature:float=1.0) -> Tensor:
+   def forward_ctx_only(self, ctx_toks:Tensor, temperature:float=1.0, use_log=True) -> Tensor:
       x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
       for ctx_layer, _, _ in self.layers:
          x,_,_ = ctx_layer(x)
-      return self.ctx_predict(x, temperature)
+      return self.ctx_predict(x, temperature, use_log)
 
-   def ctx_predict(self, ctx_latent:Tensor, temperature:float=1.0) -> Tensor:
-      return torch.log_softmax(self.ctx_class_head(ctx_latent) / (temperature+1e-10), dim=-1)
+   def ctx_predict(self, ctx_latent:Tensor, temperature:float=1.0, use_log=True) -> Tensor:
+      fnx = self.log_softmax if use_log else self.softmax
+      return fnx(self.ctx_class_head(ctx_latent) / (temperature+1e-10))
 
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
@@ -208,8 +216,9 @@ class FusedTransformer(Module):
       
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
-   def estimate(self, den_latent:Tensor, temperature=1.0) -> Tensor:
-      return torch.log_softmax(self.den_class_head(den_latent) / (temperature+1e-10)) # type: ignore
+   def estimate(self, den_latent:Tensor, temperature=1.0, use_log=True) -> Tensor:
+      fnx = self.log_softmax if use_log else self.softmax
+      return fnx(self.den_class_head(den_latent) / (temperature+1e-10))
 
 
 
@@ -248,7 +257,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
    last_weights = [f"{last_folder}/{f}" for f in os.listdir(last_folder) if model_type in f and f.endswith("safetensors") and (phase is None or f.startswith(f"p{phase}"))]
    last_weight = max(last_weights, key=os.path.getmtime)
    print(f"Using {last_weight}")
-   load_state_dict(model, safe_load(last_weight))
+   load_model(model, last_weight)
 
 
 
@@ -296,7 +305,7 @@ def train(phase:int, token_ptr=0, recover=False):
       weights_filepath = f"{weights_folder}/" + Config.save_name.format(phase, step)
       if not os.path.exists(weights_filepath):
          raise ValueError(f"Could not find weights file {weights_filepath} with recover=True")
-      load_state_dict(model, safe_load(weights_filepath))
+      load_model(model, weights_filepath)
       print(f"Recovering to Step {step} in Phase {phase} from {weights_folder}")
    else:
       if phase == Config.start_phase:
@@ -343,12 +352,12 @@ def train(phase:int, token_ptr=0, recover=False):
          index = [CS*i for i in range(BS)]
 
       X_tok = np.array([data[i:i+CS] for i in index], dtype=np.int32)
-      X = Tensor(X_tok).int().detach()
+      X = Tensor(X_tok).int().detach().to(device)
 
       loss = torch.zeros((1)).sum()
       if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok)
+         Y = Tensor(Y_tok).to(device)
 
          diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD // 2
 
@@ -382,7 +391,7 @@ def train(phase:int, token_ptr=0, recover=False):
          del attn_mask, x_0, pred_x_0, x_t, e_t
       elif tc.ctx_tok_loss:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
-         Y = Tensor(Y_tok).long()
+         Y = Tensor(Y_tok).long().to(device)
          
          output = model.forward_ctx_only(X)
          loss = loss + loss_fnx(output, Y)
@@ -393,15 +402,15 @@ def train(phase:int, token_ptr=0, recover=False):
          opt.step()
       else:
          loss_l = test_loss if test_index==2 else train_loss
-         loss_l.append(loss.numpy().item())
+         loss_l.append(loss.detach().cpu().numpy().item())
          
          if phase == 1:
             acc_l = test_acc if test_index==2 else train_acc
-            acc_l.append((torch.argmax(output, dim=-1)==Y).mean().numpy().item())
+            acc_l.append((torch.argmax(output, dim=-1)==Y).float().mean().detach().cpu().numpy().item())
          else:
             accs_l = test_accs if test_index==2 else train_accs
             for i in range(DS):
-               accs_l[i].append((torch.argmax(output[:,:,i:i+1], dim=-1)==Y[:,:,i:i+1]).mean().numpy().item())
+               accs_l[i].append((torch.argmax(output[:,:,i:i+1], dim=-1)==Y[:,:,i:i+1]).mean().detach().cpu().numpy().item())
 
       del X, Y, output, loss
 
@@ -429,7 +438,7 @@ def train(phase:int, token_ptr=0, recover=False):
       if step % Config.train[phase].save_every == 0:
          if not os.path.exists(weights_folder):
             os.makedirs(weights_folder)
-         safe_save(get_state_dict(model), os.path.join(weights_folder, Config.save_name.format(phase, step)))
+         save_model(model, os.path.join(weights_folder, Config.save_name.format(phase, step)))
          config_filepath = f"{weights_folder}/config.py"
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
@@ -472,46 +481,42 @@ ANTONIO:
 """
 
 def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4):
-   np.random.seed(1337)
-   load_train_test()
-   if model is None:
-      model = FusedTransformer(**Config.model_params.to_dict())
-      load_latest_weight(model, "model", archive)
+   with torch.no_grad():
+      np.random.seed(1337)
+      load_train_test()
+      if model is None:
+         model = FusedTransformer(**Config.model_params.to_dict())
+         load_latest_weight(model, "model", archive)
 
-   CS = Config.model_params.ctx_pos_size
-   all_output = start
+      CS = Config.model_params.ctx_pos_size
+      all_output = start
 
-   @TinyJit
-   def jit(x):
-      return model.forward_ctx_only(x, temperature=temperature).realize()
+      X = Tensor(encode(all_output)).float().reshape(1,-1).to(device)
+      start_i = X.shape[-1]-1
+      X = torch.cat([X, torch.zeros(1,CS-X.shape[-1])], dim=-1).long()
+      for i in trange(start_i, count+start_i):
+         assert X.shape == (1,CS,)
 
-   X = Tensor(encode(all_output), dtype=dtypes.float32, requires_grad=False).reshape(1,-1)
-   start_i = X.shape[-1]-1
-   X = X.pad( ((0,0), (0,CS-X.shape[-1])) )
-   for i in trange(start_i, count+start_i):
-      assert X.shape == (1,CS,)
+         pull_i = min(i, CS-1)
+         probs_np = model.forward_ctx_only(X, temperature=temperature, use_log=False)[0,pull_i,:].cpu().numpy()
+         tok = int(np.random.choice(len(probs_np), p=probs_np))
+         byte = decode([tok])
+         try:
+            char = byte.decode()
+         except Exception:
+            char = "<?>"
+         all_output += char
 
-      pull_i = min(i, CS-1)
-      probs_np = jit(X.realize())[0,pull_i,:].numpy()
-      tok = int(np.random.choice(len(probs_np), p=probs_np))
-      byte = decode([tok])
-      try:
-         char = byte.decode()
-      except Exception:
-         char = "<?>"
-      all_output += char
+         X_np = np.zeros((1,CS+1), dtype=np.float32)
+         X_np[:,:-1] = X.cpu().numpy()
+         if i + 1 < CS:
+            X_np[:,i+1:i+2] = tok
+            X = Tensor(X_np[:,:-1]).long().to(device)
+         else:
+            X_np[:,-1:] = tok
+            X = Tensor(X_np[:,1:]).long().to(device)
 
-      X_np = np.zeros((1,CS+1))
-      X_np[:,:-1] = X.numpy()
-      if i + 1 < CS:
-         X_np[:,i+1:i+2] = tok
-         X = Tensor(X_np[:,:-1], dtype=dtypes.float32, requires_grad=False)
-      else:
-         X_np[:,-1:] = tok
-         X = Tensor(X_np[:,1:], dtype=dtypes.float32, requires_grad=False)
-   
-   del X
-   return all_output
+      return all_output
 
 def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
    global encode, decode

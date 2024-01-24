@@ -35,7 +35,8 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   batch_size = 24
+   batch_size = 32
+   test_every = 200
 
    grad_ctx = True
 
