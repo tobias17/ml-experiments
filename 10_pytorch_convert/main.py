@@ -37,7 +37,7 @@ class SelfAttention(Module):
       return self.to_out(h_),k,v
    def freeze_parameters(self, is_last:bool):
       if is_last:
-         for param in [self.to_q.parameters()] + [self.to_out.parameters()]:
+         for param in list(self.to_q.parameters()) + list(self.to_out.parameters()):
             param.requires_grad = False
 
 class CrossAttention(Module):
@@ -99,7 +99,7 @@ class AttentionBlock(Module):
    def freeze_parameters(self, is_last:bool):
       self.attn1.freeze_parameters(is_last)
       if is_last:
-         for param in [self.norm3.parameters()] + [self.ff.parameters()]:
+         for param in list(self.norm3.parameters()) + list(self.ff.parameters()):
             param.requires_grad = False
 
 class TimeFusion(Module):
@@ -140,13 +140,15 @@ class FusedTransformer(Module):
       )
       self.den_dim, self.time_dim = den_dim, time_dim
 
-      self.layers: List[Tuple[AttentionBlock,TimeFusion,AttentionBlock]] = [
-         (
-            AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False),
-            TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult),
-            AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult),
-         ) for _ in range(n_layers)
-      ]
+      self.layers: List[Tuple[AttentionBlock,TimeFusion,AttentionBlock]] = []
+      for i in range(n_layers):
+         a = AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False)
+         b = TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult)
+         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult)
+         self.layers.append((a,b,c))
+         setattr(self, f"layer{i}_a", a)
+         setattr(self, f"layer{i}_b", b)
+         setattr(self, f"layer{i}_c", c)
       self.n_layers = n_layers
 
       self.ctx_class_head = Linear(ctx_dim, vocab_size)

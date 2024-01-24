@@ -3,14 +3,14 @@ from typing import Dict
 
 class ModelParams(Dictable):
    vocab_size   = 50304
-   timesteps    = 128
+   timesteps    = 256
    time_deltas  = 64
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
-   n_layers     = 12
+   n_layers     = 16
    ctx_dim      = 768
    den_dim      = 768
-   time_dim     = 320
+   time_dim     = 768//2
    fusion_mult  = 1
    ctx_heads    = 12
    den_heads    = 12
@@ -47,7 +47,7 @@ class Phase1Train(Train):
    ctx_tok_loss = True
 
 class Phase2Train(Train):
-   batch_size = 2
+   batch_size = 1
 
    detach_ctx = True
    grad_den = True
@@ -57,7 +57,7 @@ class Phase2Train(Train):
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
-   batch_size = 2
+   batch_size = 1
 
    grad_ctx = True
    grad_den = True
@@ -77,5 +77,5 @@ class Config:
       2: Phase2Train,
       3: Phase3Train,
    }
-   start_phase = 1
+   start_phase = 3
    save_name = "p{0}_model_{1}.safetensors"
