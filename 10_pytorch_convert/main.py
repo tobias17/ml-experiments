@@ -376,7 +376,7 @@ def train(phase:int, token_ptr=0, recover=False):
 
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
          x_0 = model.make_x_0_from(Y)
-         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(device)).detach()
+         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(device)).detach() # type: ignore
 
          e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(device), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
@@ -443,7 +443,7 @@ def train(phase:int, token_ptr=0, recover=False):
       if step % Config.train[phase].save_every == 0:
          if not os.path.exists(weights_folder):
             os.makedirs(weights_folder)
-         save_model(model, os.path.join(weights_folder, Config.save_name.format(phase, step)))
+         save_model(model, os.path.join(weights_folder, Config.save_name.format(phase, f"{step//1000}k")))
          config_filepath = f"{weights_folder}/config.py"
          if not os.path.exists(config_filepath):
             shutil.copyfile(f"{os.path.dirname(__file__)}/config.py", config_filepath)
@@ -470,7 +470,7 @@ def train(phase:int, token_ptr=0, recover=False):
          gen_folder = f"{weights_folder}/p{phase}_gens"
          if not os.path.exists(gen_folder):
             os.makedirs(gen_folder)
-         with open(f"{gen_folder}/text_{step}.txt", "w") as f:
+         with open(f"{gen_folder}/text_{step//1000}k.txt", "w") as f:
             try:
                f.write(text)
             except Exception:
@@ -610,9 +610,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
       return output
 
 if __name__ == "__main__":
-   # train(phase=1)
+   train(phase=1)
    # print(generate_ctx(count=16))
 
    # train(phase=2, recover=False)
-   train(phase=3, recover=False)
+   # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))
