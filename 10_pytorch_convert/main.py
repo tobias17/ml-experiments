@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, CrossEntropyLoss
+from torch.nn import Linear, LayerNorm, Embedding, Dropout, Sequential, functional, SiLU, CrossEntropyLoss, Module
 from torch.optim import Adam
 import tiktoken
 import numpy as np
@@ -14,7 +14,7 @@ from functools import reduce
 def prod(collection):
    return reduce(lambda a,b: a*b, collection, 1)
 
-class SelfAttention:
+class SelfAttention(Module):
    def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout, is_causal=False):
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.to_k = Linear(query_dim, n_heads*d_head, bias=False)
@@ -24,28 +24,25 @@ class SelfAttention:
       self.to_out = [Linear(n_heads*d_head, query_dim)]
       self.dropout = Dropout(dropout)
       self.is_causal = is_causal
-   def __call__(self, x:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+   def forward(self, x:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
       q,k,v = self.to_q(x), self.to_k(x), self.to_v(x)
       q,k,v = [y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2) for y in (q,k,v)]
       attention = self.dropout(functional.scaled_dot_product_attention(q, k, v, is_causal=self.is_causal)).transpose(-3,-2)
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
       return h_.sequential(self.to_out),k,v
-   def get_parameters(self, is_last:bool):
-      return [
-         *([] if is_last else get_parameters(self.to_q)),
-         *get_parameters(self.to_k),
-         *get_parameters(self.to_v),
-         *([] if is_last else get_parameters(self.to_out)),
-      ]
+   def freeze_parameters(self, is_last:bool):
+      if is_last:
+         for param in [self.to_q.parameters()] + [self.to_out.parameters()]:
+            param.requires_grad = False
 
-class CrossAttention:
+class CrossAttention(Module):
    def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout):
       self.to_q = Linear(query_dim, n_heads*d_head, bias=False)
       self.num_heads = n_heads
       self.head_size = d_head
       self.to_out = [Linear(n_heads*d_head, query_dim)]
       self.dropout = Dropout(dropout)
-   def __call__(self, x:Tensor, attn_mask:Tensor, k:Tensor, v:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+   def forward(self, x:Tensor, attn_mask:Tensor, k:Tensor, v:Tensor) -> Tuple[Tensor, Tensor, Tensor]:
       fnx = lambda y: y.reshape(x.shape[0], -1, self.num_heads, self.head_size).transpose(-3,-2)
       q = fnx(self.to_q(x))
       attn_mask = attn_mask.reshape(attn_mask.shape[0], 1, *attn_mask.shape[1:]).expand((attn_mask.shape[0], self.num_heads, *attn_mask.shape[1:]))
@@ -53,24 +50,24 @@ class CrossAttention:
       h_ = attention.reshape(shape=(*x.shape[0:-2], -1, self.num_heads * self.head_size))
       return h_.sequential(self.to_out), k, v
 
-class GEGLU:
+class GEGLU(Module):
    def __init__(self, dim_in, dim_out):
       self.proj = Linear(dim_in, dim_out * 2)
       self.dim_out = dim_out
-   def __call__(self, x:Tensor) -> Tensor:
+   def forward(self, x:Tensor) -> Tensor:
       x, gate = self.proj(x).chunk(2, dim=-1)
       return x * gate.gelu()
 
-class FeedForward:
+class FeedForward(Module):
    def __init__(self, dim, mult=4):
       self.net = Sequential(
          GEGLU(dim, dim*mult),
          Linear(dim*mult, dim),
       )
-   def __call__(self, x:Tensor) -> Tensor:
+   def forward(self, x:Tensor) -> Tensor:
       return self.net(x)
 
-class AttentionBlock:
+class AttentionBlock(Module):
    def __init__(self, dim, n_heads, d_head, ff_mult, dropout=Config.dropout, is_causal=False, cross_attn=True):
       self.norm1 = LayerNorm(dim)
       self.attn1 = SelfAttention(dim, n_heads, d_head, is_causal=is_causal)
@@ -81,7 +78,7 @@ class AttentionBlock:
       self.norm3 = LayerNorm(dim)
       self.ff    = FeedForward(dim, mult=ff_mult)
       self.dropout = dropout
-   def __call__(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
+   def forward(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
       h,k_,v_ = self.attn1(self.norm1(x))
       x = x + h
       if self.cross_attn:
@@ -89,15 +86,13 @@ class AttentionBlock:
          x = x + h
       x = self.ff(self.norm3(x)).dropout(self.dropout) + x
       return x, k_, v_
-   def get_parameters(self, is_last:bool):
-      return [
-         *(get_parameters(self.norm1)),
-         *(self.attn1.get_parameters(is_last)),
-         *(get_parameters(self.norm2) + get_parameters(self.attn2) if self.cross_attn else []),
-         *([] if is_last else get_parameters(self.norm3) + get_parameters(self.ff)),
-      ]
+   def freeze_parameters(self, is_last:bool):
+      self.attn1.freeze_parameters(is_last)
+      if is_last:
+         for param in [self.norm3.parameters()] + [self.ff.parameters()]:
+            param.requires_grad = False
 
-class TimeFusion:
+class TimeFusion(Module):
    def __init__(self, channels, time_channels, emb_channels):
       self.in_layers = Sequential(
          SiLU(),
@@ -111,7 +106,7 @@ class TimeFusion:
          SiLU(),
          Linear(emb_channels, channels),
       )
-   def __call__(self, x:Tensor, time_emb:Tensor):
+   def forward(self, x:Tensor, time_emb:Tensor):
       return x + self.out_layers(self.in_layers(x) + self.emb_layers(time_emb))
 
 def timestep_embedding(timesteps, dim, max_period=10000) -> Tensor:
@@ -120,7 +115,7 @@ def timestep_embedding(timesteps, dim, max_period=10000) -> Tensor:
   args = timesteps * freqs
   return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
-class FusedTransformer:
+class FusedTransformer(Module):
    def __init__(self, vocab_size:int, timesteps:int, time_deltas:int, ctx_pos_size:int, den_pos_size:int, n_layers:int, ctx_dim:int, den_dim:int, time_dim:int, fusion_mult:int, ctx_heads:int, den_heads:int, ctx_ff_mult:int, den_ff_mult:int):
       self.ctx_tok_embed = Embedding(vocab_size, ctx_dim)
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
@@ -145,30 +140,35 @@ class FusedTransformer:
       self.ctx_class_head = Linear(ctx_dim, vocab_size)
       self.den_class_head = Linear(den_dim, vocab_size)
    
-   def get_parameters(self, phase:int) -> List[Tensor]:
-      params, tc = [], Config.train[phase]
+   def freeze_parameters(self, phase:int) -> None:
+      tc = Config.train[phase]
+      freeze: List[Module | Sequential] = []
 
-      if tc.grad_ctx:
-         params += get_parameters(self.ctx_tok_embed)
-         params += get_parameters(self.ctx_pos_embed)
-      if tc.grad_den:
-         params += get_parameters(self.den_tok_embed)
-         params += get_parameters(self.den_time_embed)
+      if not tc.grad_ctx:
+         freeze.append(self.ctx_tok_embed)
+         freeze.append(self.ctx_pos_embed)
+      if not tc.grad_den:
+         freeze.append(self.den_tok_embed)
+         freeze.append(self.den_time_embed)
 
       for i, v in enumerate(self.layers):
          ctx_layer, time_layer, den_layer = v
          if tc.grad_ctx:
-            params += ctx_layer.get_parameters(i+1 == self.n_layers and (not tc.ctx_tok_loss))
-         if tc.grad_den:
-            params += get_parameters(time_layer)
-            params += get_parameters(den_layer)
+            ctx_layer.freeze_parameters(i+1 == self.n_layers and (not tc.ctx_tok_loss))
+         else:
+            freeze.append(ctx_layer)
+         if not tc.grad_den:
+            freeze.append(time_layer)
+            freeze.append(den_layer)
 
-      if tc.ctx_tok_loss:
-         params += get_parameters(self.ctx_class_head)
-      if tc.den_tok_loss_orig or tc.den_tok_loss_pred:
-         params += get_parameters(self.den_class_head)
-
-      return params
+      if not tc.ctx_tok_loss:
+         freeze.append(self.ctx_class_head)
+      if not tc.den_tok_loss_orig and not tc.den_tok_loss_pred:
+         freeze.append(self.den_class_head)
+      
+      for module in freeze:
+         for param in module.parameters():
+            param.requires_grad = False
 
    def forward_ctx_only(self, ctx_toks:Tensor, temperature:float=1.0) -> Tensor:
       x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
@@ -182,7 +182,7 @@ class FusedTransformer:
    def make_x_0_from(self, toks:Tensor) -> Tensor:
       return self.den_tok_embed(toks)
 
-   def __call__(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tuple[Tensor, Tensor]:
+   def forward(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tuple[Tensor, Tensor]:
       ctx_latent  = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
       time_latent = self.den_time_embed(timestep_embedding(timesteps.reshape((-1,1)), self.time_dim))
 
@@ -201,7 +201,7 @@ class FusedTransformer:
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
    def estimate(self, den_latent:Tensor, temperature=1.0) -> Tensor:
-      return (self.den_class_head(den_latent) / (temperature+1e-10)).log_softmax()
+      return torch.log_softmax(self.den_class_head(den_latent) / (temperature+1e-10)) # type: ignore
 
 
 
@@ -304,8 +304,9 @@ def train(phase:int, recover=False):
                   raise RuntimeError("Avoiding overwriting previous run")
          load_latest_weight(model, "model", phase=(phase-1))
 
-   all_params = get_parameters(model)
-   train_params = model.get_parameters(phase)
+   model.freeze_parameters(phase)
+   all_params = model.parameters()
+   train_params = [p for p in all_params if p.requires_grad]
    print(f"\nPhase {phase}")
    for label, params in (("Train Params:", train_params), ("Model Params:", all_params)):
       sz = 0
