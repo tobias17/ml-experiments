@@ -18,7 +18,7 @@ class ModelParams(Dictable):
    den_ff_mult  = 2
 
 class Train:
-   learning_rate = 2**-17
+   learning_rate = 2**-16
    batch_size = 1
    test_every = 50
    save_every = 2000
@@ -35,8 +35,8 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   batch_size = 32
-   test_every = 200
+   batch_size = 48
+   test_every = 100
 
    grad_ctx = True
 

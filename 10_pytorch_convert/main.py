@@ -345,7 +345,7 @@ def train(phase:int, token_ptr=0, recover=False):
       if test_index <= 1:
          data = X_train
          index = [token_ptr+CS*i for i in range(BS)]
-         if test_index == 1:
+         if test_index == 0:
             token_ptr += CS*BS
       else:
          data = X_test
@@ -423,11 +423,11 @@ def train(phase:int, token_ptr=0, recover=False):
             else:
                train_acc_str, test_acc_str = f"{100.0*sum(train_accs[i][-1] for i in range(DS))/DS:.2f}", f"{100.0*sum(test_accs[i][-1] for i in range(DS))/DS:.2f}"
             print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {train_acc_str}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {test_acc_str}% | {(time.time() - s_time) / float(TE):.2f} sec/iter")
-            write_graph(train_loss, test_loss, f"{weights_folder}/p{phase}_graph_loss.png", delta=TE*Config.train[phase].batch_size)
+            write_graph(train_loss, test_loss, f"{weights_folder}/p{phase}_graph_loss.png", delta=token_ptr//(len(train_loss)*TE)/1000, x_label="tokens (thousand)", y_label="loss")
             if phase == 1:
-               write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=TE*Config.train[phase].batch_size)
+               write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=token_ptr//(len(train_acc)*TE)/1000, x_label="tokens (thousand)", y_label="acc")
             else:
-               write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=TE*Config.train[phase].batch_size)
+               write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=token_ptr//(len(train_accs[0])*TE)/1000, x_label="tokens (thousand)", y_label="acc")
             s_time = time.time()
             test_index = 0
          else:
