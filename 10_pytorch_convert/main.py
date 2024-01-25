@@ -423,7 +423,6 @@ def train(phase:int, token_ptr=0, recover=False):
       if (step+1) % Config.train[phase].deep_every == 0 and phase > 1 and test_index == 0:
          g_time = time.time()
          deep_acc.append(deep_test_den(X_test, model))
-         print(deep_acc[-1])
          s_time += (time.time() - g_time)
 
       TE = Config.train[phase].test_every
@@ -633,7 +632,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
          np.random.seed(iteration)
          offset = np.random.randint(0, data.shape[0]-CS-DS, dtype=np.int32)
          X = Tensor(data[offset:offset+CS].astype(int)).long().to(device)
-         x_0 = model.make_x_0_from(Tensor([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).long().to(device))
+         x_0 = model.make_x_0_from(Tensor(np.array([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).astype(int)).long().to(device))
          x_0 = x_0.reshape(1,*x_0.shape)
 
          den_index = 0
@@ -668,7 +667,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
             x_0 = pred_x_0
 
          Y = Tensor(data[offset+1:offset+1+CS].astype(int))[start_index:].to(device)
-         pred_y = first_x_0.argmax(dim=-1)[:,start_index:].to(device)
+         pred_y = model.estimate(first_x_0, 0.1, False).argmax(dim=-1)[:,start_index:]
          acc += (Y == pred_y).float().mean().cpu().numpy().item()
    
    return acc / iterations
