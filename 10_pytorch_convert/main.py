@@ -629,6 +629,8 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
          den_index = 0
          den_start_amount = timestep_reduce
          while den_index < DS:
+            overwrite = (DS-den_index-1)
+            x_0[:,:overwrite,:] = model.make_x_0_from(Tensor([data[offset+i:offset+i+overwrite] for i in range(1,CS+1)]).long().to(device))
 
             alphas = np.ones((DS,), dtype=np.float32)
             timesteps = np.zeros((DS,), dtype=np.float32)
@@ -652,8 +654,6 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
                den_start_amount += TD
                X = Tensor(data[offset+den_index:offset+den_index+CS]).long().to(device)
             den_start_amount -= timestep_reduce
-
-            x_0 = pred_x_0
 
          Y = Tensor(data[offset+1:offset+1+CS])[:,start_index:]
          pred_y = first_x_0.argmax(dim=-1)[:,start_index:]
