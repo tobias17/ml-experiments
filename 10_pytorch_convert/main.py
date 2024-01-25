@@ -286,6 +286,7 @@ def train(phase:int, token_ptr=0, recover=False):
    else:
       train_accs:List[List[float]] = [[] for _ in range(DS)]
       test_accs: List[List[float]] = [[] for _ in range(DS)]
+      deep_acc: List[float] = []
       
    if recover == True:
       weights_folder = get_latest_folder()
@@ -419,6 +420,12 @@ def train(phase:int, token_ptr=0, recover=False):
 
       del X, Y, output, loss
 
+      if (step+1) % Config.train[phase].deep_every == 0 and phase > 1 and test_index == 0:
+         g_time = time.time()
+         deep_acc.append(deep_test_den(X_test, model))
+         print(deep_acc[-1])
+         s_time += (time.time() - g_time)
+
       TE = Config.train[phase].test_every
       if (step+1) % TE == 0:
          if test_index == 2:
@@ -427,12 +434,15 @@ def train(phase:int, token_ptr=0, recover=False):
                train_acc_str, test_acc_str = f"{100.0*train_acc[-1]:.2f}", f"{100.0*test_acc[-1]:.2f}"
             else:
                train_acc_str, test_acc_str = f"{100.0*sum(train_accs[i][-1] for i in range(DS))/DS:.2f}", f"{100.0*sum(test_accs[i][-1] for i in range(DS))/DS:.2f}"
-            print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Accuracy: {train_acc_str}% | Test Loss: {test_loss[-1]:.4f} | Test Accuracy: {test_acc_str}% | {(time.time() - s_time) / float(TE):.2f} sec/iter")
+            deep_text = f" | Deep Acc: {100.0*deep_acc[-1]:.2f}%" if phase > 1 and len(deep_acc) > 0 else ""
+            print(f"Step {str(step): >5} | Train Loss: {train_loss[-1]:.4f} | Train Acc: {train_acc_str}% | Test Loss: {test_loss[-1]:.4f} | Test Acc: {test_acc_str}%{deep_text} | {(time.time() - s_time) / float(TE):.2f} sec/iter")
             write_graph(train_loss, test_loss, f"{weights_folder}/p{phase}_graph_loss.png", delta=token_ptr//(len(train_loss)*TE)/1000, x_label="tokens (thousand)", y_label="loss")
             if phase == 1:
                write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=token_ptr//(len(train_acc)*TE)/1000, x_label="tokens (thousand)", y_label="acc")
             else:
                write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=token_ptr//(len(train_accs[0])*TE)/1000, x_label="tokens (thousand)", y_label="acc")
+               if len(deep_acc) > 0:
+                  write_graph(deep_acc, deep_acc, f"{weights_folder}/p{phase}_graph_deep.png", ylim=(0,1), delta=token_ptr//(len(deep_acc)*Config.train[phase].deep_every)/1000, x_label="tokens (thousand)", y_label="acc")
             s_time = time.time()
             test_index = 0
          else:
@@ -617,20 +627,20 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    CS = Config.model_params.ctx_pos_size
    DS = Config.model_params.den_pos_size
    TD = Config.model_params.time_deltas
-   test_head_size = Config.model_params.ctx_pos_size - start_index
 
    with torch.no_grad():
       for iteration in trange(iterations):
          np.random.seed(iteration)
-         offset = np.random.randint(0, data.shape[0]-CS-DS, size=(BS,))
-         X = Tensor(data[offset:offset+CS]).long().to(device)
+         offset = np.random.randint(0, data.shape[0]-CS-DS, dtype=np.int32)
+         X = Tensor(data[offset:offset+CS].astype(int)).long().to(device)
          x_0 = model.make_x_0_from(Tensor([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).long().to(device))
+         x_0 = x_0.reshape(1,*x_0.shape)
 
          den_index = 0
          den_start_amount = timestep_reduce
          while den_index < DS:
             overwrite = (DS-den_index-1)
-            x_0[:,:overwrite,:] = model.make_x_0_from(Tensor([data[offset+i:offset+i+overwrite] for i in range(1,CS+1)]).long().to(device))
+            x_0[:,:,:overwrite,:] = model.make_x_0_from(Tensor([data[offset+i:offset+i+overwrite] for i in range(1,CS+1)]).long().to(device))
 
             alphas = np.ones((DS,), dtype=np.float32)
             timesteps = np.zeros((DS,), dtype=np.float32)
@@ -652,19 +662,21 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
                first_x_0 = pred_x_0[:,:,0]
                pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
                den_start_amount += TD
-               X = Tensor(data[offset+den_index:offset+den_index+CS]).long().to(device)
+               X = Tensor(data[offset+den_index:offset+den_index+CS].astype(int)).long().to(device)
             den_start_amount -= timestep_reduce
 
-         Y = Tensor(data[offset+1:offset+1+CS])[:,start_index:]
-         pred_y = first_x_0.argmax(dim=-1)[:,start_index:]
+            x_0 = pred_x_0
+
+         Y = Tensor(data[offset+1:offset+1+CS].astype(int))[start_index:].to(device)
+         pred_y = first_x_0.argmax(dim=-1)[:,start_index:].to(device)
          acc += (Y == pred_y).float().mean().cpu().numpy().item()
    
    return acc / iterations
 
 if __name__ == "__main__":
-   train(phase=1)
+   # train(phase=1, recover=True)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=False)
+   train(phase=2, recover=False)
    # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))

@@ -21,6 +21,7 @@ class Train:
    learning_rate = 2**-16
    batch_size = 1
    test_every = 200
+   deep_every = 1000
    save_every = 10000
    gen_every  = 10000
    gen_count  = 64
@@ -43,6 +44,9 @@ class Phase1Train(Train):
 
 class Phase2Train(Train):
    batch_size = 1
+
+   test_every = 20
+   deep_every = 100
 
    detach_ctx = True
    grad_den = True
