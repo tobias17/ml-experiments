@@ -609,20 +609,6 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> float:
-   acc = 0
-   with torch.no_grad():
-      for iteration in trange(iterations):
-         CS = Config.model_params.ctx_pos_size
-         DS = Config.model_params.den_pos_size
-
-         test_head_size = Config.model_params.ctx_pos_size - start_index
-         offset = np.random.randint(0, data.shape[0]-CS-DS, size=(1,))
-         X = Tensor(data[offset:offset+CS]).long().to(device)
-         Y = Tensor(data[1+offset:1+offset+CS]).to(device)
-   
-   return acc / iterations
-
 if __name__ == "__main__":
    train(phase=1)
    # print(generate_ctx(count=16))
