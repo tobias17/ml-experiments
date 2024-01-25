@@ -609,6 +609,58 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
+def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> float:
+   acc = 0
+   all_alphas = make_alphas()
+   BS = 1
+   TS = Config.model_params.timesteps
+   CS = Config.model_params.ctx_pos_size
+   DS = Config.model_params.den_pos_size
+   TD = Config.model_params.time_deltas
+   test_head_size = Config.model_params.ctx_pos_size - start_index
+
+   with torch.no_grad():
+      for iteration in trange(iterations):
+         np.random.seed(iteration)
+         offset = np.random.randint(0, data.shape[0]-CS-DS, size=(BS,))
+         X = Tensor(data[offset:offset+CS]).long().to(device)
+         x_0 = model.make_x_0_from(Tensor([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).long().to(device))
+
+         den_index = 0
+         den_start_amount = timestep_reduce
+         while den_index < DS:
+
+            alphas = np.ones((DS,), dtype=np.float32)
+            timesteps = np.zeros((DS,), dtype=np.float32)
+            for i in range(DS):
+               ts = min(den_start_amount + i*TD, TS-1)
+               alphas[i] = all_alphas[int(ts)]
+               timesteps[i] = ts
+            alphas = Tensor(alphas).reshape(1,1,DS,1).to(device) # type: ignore
+            attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
+            attn_mask = Tensor(attn_mask.cpu().numpy()).to(device)
+
+            x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(device)
+
+            e_t = model(x_t, X, Tensor(timesteps).long().to(device), attn_mask)[0]
+            pred_x_0 = x_t - e_t
+
+            while den_start_amount <= timestep_reduce:
+               den_index += 1
+               first_x_0 = pred_x_0[:,:,0]
+               pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
+               den_start_amount += TD
+               X = Tensor(data[offset+den_index:offset+den_index+CS]).long().to(device)
+            den_start_amount -= timestep_reduce
+
+            x_0 = pred_x_0
+
+         Y = Tensor(data[offset+1:offset+1+CS])[:,start_index:]
+         pred_y = first_x_0.argmax(dim=-1)[:,start_index:]
+         acc += (Y == pred_y).float().mean().cpu().numpy().item()
+   
+   return acc / iterations
+
 if __name__ == "__main__":
    train(phase=1)
    # print(generate_ctx(count=16))
