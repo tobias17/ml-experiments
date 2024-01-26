@@ -41,3 +41,18 @@ def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=Fa
    figure = plt.gcf()
    figure.set_size_inches(18/1.5, 10/1.5)
    plt.savefig(save_dirpath, dpi=100)
+
+def write_probs(data, save_dirpath, ylim=(0,None), delta=1, offset=0, x_label=None, y_label=None, title=None):
+   plt.clf()
+   x = np.arange(0, len(data))*delta+delta+offset
+   plt.plot(x, [d[0] for d in data], label="q1")
+   plt.plot(x, [d[1] for d in data], label="med")
+   plt.plot(x, [d[2] for d in data], label="q3")
+   plt.ylim(ylim)
+   plt.legend()
+   if x_label is not None: plt.xlabel(x_label)
+   if y_label is not None: plt.ylabel(y_label)
+   if title is not None: plt.title(title)
+   figure = plt.gcf()
+   figure.set_size_inches(18/1.5, 10/1.5)
+   plt.savefig(save_dirpath, dpi=100)

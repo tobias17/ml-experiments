@@ -5,7 +5,7 @@ from torch.optim import Adam
 import tiktoken
 import numpy as np
 from config import Config
-from util import write_graph, Schedules
+from util import write_graph, write_probs, Schedules
 from typing import Dict, Optional, List, Tuple, Union
 import time, datetime, os, shutil, math, json
 from tqdm import tqdm, trange # type: ignore
@@ -287,7 +287,8 @@ def train(phase:int, token_ptr=0, recover=False):
    else:
       train_accs:List[List[float]] = [[] for _ in range(DS)]
       test_accs: List[List[float]] = [[] for _ in range(DS)]
-      deep_acc:  List[float]       = []
+      deep_acc:  List[float] = []
+      deep_probs:List[Tuple[float,float,float]] = []
       
    if recover == True:
       weights_folder = get_latest_folder()
@@ -307,6 +308,7 @@ def train(phase:int, token_ptr=0, recover=False):
             train_accs = data["train_acc"]
             test_accs  = data["test_acc"]
             deep_acc   = data.get("deep_acc", [])
+            deep_probs = data.get("deep_probs", [])
       weights_filepath = f"{weights_folder}/" + Config.save_name.format(phase, f"{step//1000}k")
       if not os.path.exists(weights_filepath):
          raise ValueError(f"Could not find weights file {weights_filepath} with recover=True")
@@ -424,7 +426,9 @@ def train(phase:int, token_ptr=0, recover=False):
 
       if (step+1) % Config.train[phase].deep_every == 0 and phase > 1 and test_index == 0:
          g_time = time.time()
-         deep_acc.append(deep_test_den(X_test, model))
+         acc, probs = deep_test_den(X_test, model)
+         deep_acc.append(acc)
+         deep_probs.append(probs)
          s_time += (time.time() - g_time)
 
       TE = Config.train[phase].test_every
@@ -442,9 +446,10 @@ def train(phase:int, token_ptr=0, recover=False):
             if phase == 1:
                write_graph(train_acc,  test_acc,  f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), delta=token_ptr//(len(train_acc))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Accuracy")
             else:
-               write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_acc.png", ylim=(0,1), segmented=True, delta=token_ptr//(len(train_accs[0]))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Shallow Accuracy")
+               write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_shallow_acc.png", ylim=(0,1), segmented=True, delta=token_ptr//(len(train_accs[0]))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Shallow Accuracy")
                if len(deep_acc) > 0:
-                  write_graph(deep_acc, deep_acc, f"{weights_folder}/p{phase}_graph_deep.png", ylim=(0,1), delta=token_ptr//(len(deep_acc))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Deep Accuracy")
+                  write_graph(deep_acc, deep_acc, f"{weights_folder}/p{phase}_graph_deep_acc.png", ylim=(0,1), delta=token_ptr//(len(deep_acc))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Deep Accuracy")
+                  write_probs(deep_probs, f"{weights_folder}/p{phase}_graph_deep_probs", delta=token_ptr//(len(deep_probs))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Deep Accuracy")
             s_time = time.time()
             test_index = 0
          else:
@@ -471,6 +476,7 @@ def train(phase:int, token_ptr=0, recover=False):
                "train_acc": (train_acc if phase==1 else train_accs),
                "test_acc": (test_acc if phase==1 else test_accs),
                "deep_acc": [] if phase == 1 else deep_acc,
+               "deep_probs": [] if phase == 1 else deep_probs,
             }
             json.dump(data, f)
 
@@ -622,8 +628,9 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> float:
+def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
+   probs = []
    all_alphas = make_alphas()
    BS = 1
    TS = Config.model_params.timesteps
@@ -674,11 +681,12 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
 
          Y = Tensor(data[offset+DS:offset+DS+CS].astype(int)).long()[start_index:].to(device)
          probs_y = model.estimate(first_x_0, 1.0, False)[:,start_index:]
+         probs.append(np.array([probs_y[0,i,Y[i]].cpu().numpy().item() for i in range(Y.shape[0])]))
 
          if False:
             text = ""
             for i in range(X.shape[0]):
-               byte = decode([X[i].cpu().numpy().item()])
+               byte = decode([X[i].cpu().numpy().item()]) # type: ignore
                try:
                   char = byte.decode()
                except Exception:
@@ -694,7 +702,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
             for i in range(top_n):
                idx = top_idx[i]
                prob = probs_np[idx]
-               byte = decode([idx])
+               byte = decode([idx]) # type: ignore
                try:
                   char = byte.decode()
                except Exception:
@@ -704,7 +712,8 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
          pred_y = probs_y.argmax(dim=-1)
          acc += (Y == pred_y).float().mean().cpu().numpy().item()
    
-   return acc / iterations
+   probs_np = np.array(probs).flatten()
+   return acc / iterations, [np.percentile(probs_np, p) for p in [25, 50, 75]]
 
 if __name__ == "__main__":
    # train(phase=1, recover=True)
