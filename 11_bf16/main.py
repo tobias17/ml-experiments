@@ -14,6 +14,7 @@ from safetensors.torch import load_model, save_model
 
 device = "cuda"
 torch.set_default_device(device)
+TO: Dict = { "device": device, "dtype": torch.bfloat16 }
 
 def prod(collection):
    return reduce(lambda a,b: a*b, collection, 1)
@@ -122,7 +123,7 @@ class TimeFusion(Module):
 
 def timestep_embedding(timesteps, dim, max_period=10000) -> Tensor:
   half = dim // 2
-  freqs = (-math.log(max_period) * torch.arange(half) / half).exp().to(device)
+  freqs = (-math.log(max_period) * torch.arange(half) / half).exp().to(**TO)
   args = timesteps * freqs
   return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
@@ -270,7 +271,7 @@ def train(phase:int, token_ptr=0, recover=False):
    tc = Config.train[phase]
    phase_offset = (phase-1) * 800_000_000
 
-   model = FusedTransformer(**Config.model_params.to_dict())
+   model = FusedTransformer(**Config.model_params.to_dict()).to(**TO)
 
    TS = Config.model_params.timesteps
    BS = tc.batch_size
@@ -367,7 +368,7 @@ def train(phase:int, token_ptr=0, recover=False):
       loss = torch.zeros((1)).sum()
       if tc.den_tok_loss_orig or tc.den_tok_loss_pred or tc.den_tok_noise_loss:
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
-         Y = Tensor(Y_tok).long().detach().to(device)
+         Y = Tensor(Y_tok).int().detach().to(**TO)
 
          diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD // 2
 
@@ -377,20 +378,20 @@ def train(phase:int, token_ptr=0, recover=False):
             ts = min(diff_start_amount + i*TD, TS - 1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
-         alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(device) # type: ignore
+         alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
 
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
          x_0 = model.make_x_0_from(Y)
-         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(device)).detach() # type: ignore
+         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
 
-         e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(device), attn_mask, detach_ctx=tc.detach_ctx)
+         e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(**TO), attn_mask, detach_ctx=tc.detach_ctx)
          pred_x_0 = x_t - e_t
          
          output = model.estimate(pred_x_0)
 
          if tc.ctx_tok_loss:
             ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
-            loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok))
+            loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok).to(**TO))
          if tc.den_tok_loss_orig:
             loss = loss + loss_fnx(model.estimate(x_0), Y)
          if tc.den_tok_loss_pred:
@@ -518,9 +519,9 @@ def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4
       CS = Config.model_params.ctx_pos_size
       all_output = start
 
-      X = Tensor(encode(all_output)).float().reshape(1,-1).to(device)
+      X = Tensor(encode(all_output)).float().reshape(1,-1).to(**TO)
       start_i = X.shape[-1]-1
-      X = torch.cat([X, torch.zeros(1,CS-X.shape[-1])], dim=-1).long()
+      X = torch.cat([X, torch.zeros(1,CS-X.shape[-1])], dim=-1).int()
       for i in trange(start_i, count+start_i):
          assert X.shape == (1,CS,)
 
@@ -538,10 +539,10 @@ def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4
          X_np[:,:-1] = X.cpu().numpy()
          if i + 1 < CS:
             X_np[:,i+1:i+2] = tok
-            X = Tensor(X_np[:,:-1]).long().to(device)
+            X = Tensor(X_np[:,:-1]).int().to(device)
          else:
             X_np[:,-1:] = tok
-            X = Tensor(X_np[:,1:]).long().to(device)
+            X = Tensor(X_np[:,1:]).int().to(device)
 
       return all_output
 
@@ -571,16 +572,16 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
          data = np.zeros((CS,))
          data[:start_i] = np.array(toks[:start_i])
          data_i = start_i
-         return Tensor(data).reshape(1,-1).long().to(device), data_i
+         return Tensor(data).reshape(1,-1).int().to(device), data_i
       
       def make_x_0(toks, start_i: int) -> Tensor:
          assert start_i < len(toks)
-         return model.make_x_0_from(Tensor(toks[start_i:]).long().reshape(1,-1).to(device))
+         return model.make_x_0_from(Tensor(toks[start_i:]).int().reshape(1,-1).to(**TO))
 
       toks = encode(all_output) # type: ignore
       start_i = len(toks) - DS
       assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
-      x_0 = make_x_0(toks, start_i).to(device)
+      x_0 = make_x_0(toks, start_i).to(**TO)
       den_start_amount = timestep_reduce
       X, data_i = make_X(toks, start_i)
 
@@ -592,13 +593,13 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             ts = min(den_start_amount + i*TD, TS-1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
-         alphas = Tensor(alphas).reshape(1,1,DS,1).to(device) # type: ignore
+         alphas = Tensor(alphas).reshape(1,1,DS,1).to(**TO) # type: ignore
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
-         attn_mask = Tensor(attn_mask.cpu().numpy()).to(device)
+         attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
-         x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(device)
+         x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
 
-         e_t = model(x_t, X, Tensor(timesteps).long().to(device), attn_mask)[0]
+         e_t = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)[0]
          pred_x_0 = x_t - e_t
 
          while den_start_amount <= timestep_reduce:
@@ -608,7 +609,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
                toks.append(tok)
             start_i += 1
             X, data_i = make_X(toks, start_i)
-            pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
+            pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1]).to(**TO)], dim=-2)
             den_start_amount += TD
          den_start_amount -= timestep_reduce
 
@@ -643,15 +644,15 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
          np.random.seed(iteration)
          torch.manual_seed(iteration)
          offset = np.random.randint(0, data.shape[0]-CS-DS, dtype=np.int32)
-         X = Tensor(data[offset:offset+CS].astype(int)).long().to(device)
-         x_0 = model.make_x_0_from(Tensor(np.array([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).astype(int)).long().to(device))
+         X = Tensor(data[offset:offset+CS].astype(int)).int().to(device)
+         x_0 = model.make_x_0_from(Tensor(np.array([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).astype(int)).int().to(device))
          x_0 = x_0.reshape(1,*x_0.shape)
 
          den_index = 0
          den_start_amount = timestep_reduce
          while den_index < DS:
             overwrite = (DS-den_index-1)
-            Y = Tensor([data[offset+den_index+i:offset+den_index+i+overwrite] for i in range(1,CS+1)]).long().to(device)
+            Y = Tensor([data[offset+den_index+i:offset+den_index+i+overwrite] for i in range(1,CS+1)]).int().to(device)
             x_0[:,:,:overwrite,:] = model.make_x_0_from(Y)
 
             alphas = np.ones((DS,), dtype=np.float32)
@@ -660,26 +661,26 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
                ts = min(den_start_amount + i*TD, TS-1)
                alphas[i] = all_alphas[int(ts)]
                timesteps[i] = ts
-            alphas = Tensor(alphas).reshape(1,1,DS,1).to(device) # type: ignore
+            alphas = Tensor(alphas).reshape(1,1,DS,1).to(**TO) # type: ignore
             attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
-            attn_mask = Tensor(attn_mask.cpu().numpy()).to(device)
+            attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
-            x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(device)
+            x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
 
-            e_t = model(x_t, X, Tensor(timesteps).long().to(device), attn_mask)[0]
+            e_t = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)[0]
             pred_x_0 = x_t - e_t
 
             while den_start_amount <= timestep_reduce:
                den_index += 1
                first_x_0 = pred_x_0[:,:,0]
-               pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2)
+               pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2).to(**TO)
                den_start_amount += TD
-               X = Tensor(data[offset+den_index:offset+den_index+CS].astype(int)).long().to(device)
+               X = Tensor(data[offset+den_index:offset+den_index+CS].astype(int)).int().to(device)
             den_start_amount -= timestep_reduce
 
             x_0 = pred_x_0
 
-         Y = Tensor(data[offset+DS:offset+DS+CS].astype(int)).long()[start_index:].to(device)
+         Y = Tensor(data[offset+DS:offset+DS+CS].astype(int)).int()[start_index:].to(**TO)
          probs_y = model.estimate(first_x_0, 1.0, False)[:,start_index:]
          probs.append(np.array([probs_y[0,i,Y[i]].cpu().numpy().item() for i in range(Y.shape[0])]))
 
@@ -716,9 +717,9 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    return acc / iterations, [np.percentile(probs_np, p) for p in [75, 50, 25]] # type: ignore
 
 if __name__ == "__main__":
-   # train(phase=1, recover=True)
+   train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   train(phase=2, recover=True)
+   # train(phase=2, recover=True)
    # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))
