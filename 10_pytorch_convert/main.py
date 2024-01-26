@@ -713,7 +713,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
          acc += (Y == pred_y).float().mean().cpu().numpy().item()
    
    probs_np = np.array(probs).flatten()
-   return acc / iterations, [np.percentile(probs_np, p) for p in [25, 50, 75]]
+   return acc / iterations, [np.percentile(probs_np, p) for p in [75, 50, 25]]
 
 if __name__ == "__main__":
    # train(phase=1, recover=True)
