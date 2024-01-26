@@ -287,7 +287,7 @@ def train(phase:int, token_ptr=0, recover=False):
    else:
       train_accs:List[List[float]] = [[] for _ in range(DS)]
       test_accs: List[List[float]] = [[] for _ in range(DS)]
-      deep_acc: List[float] = []
+      deep_acc:  List[float]       = []
       
    if recover == True:
       weights_folder = get_latest_folder()
@@ -305,7 +305,8 @@ def train(phase:int, token_ptr=0, recover=False):
             test_acc = data["test_acc"]
          else:
             train_accs = data["train_acc"]
-            test_accs = data["test_acc"]
+            test_accs  = data["test_acc"]
+            deep_acc   = data.get("deep_acc", [])
       weights_filepath = f"{weights_folder}/" + Config.save_name.format(phase, f"{step//1000}k")
       if not os.path.exists(weights_filepath):
          raise ValueError(f"Could not find weights file {weights_filepath} with recover=True")
@@ -469,6 +470,7 @@ def train(phase:int, token_ptr=0, recover=False):
                "test_loss": test_loss,
                "train_acc": (train_acc if phase==1 else train_accs),
                "test_acc": (test_acc if phase==1 else test_accs),
+               "deep_acc": [] if phase == 1 else deep_acc,
             }
             json.dump(data, f)
 
@@ -632,6 +634,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    with torch.no_grad():
       for iteration in trange(iterations):
          np.random.seed(iteration)
+         torch.manual_seed(iteration)
          offset = np.random.randint(0, data.shape[0]-CS-DS, dtype=np.int32)
          X = Tensor(data[offset:offset+CS].astype(int)).long().to(device)
          x_0 = model.make_x_0_from(Tensor(np.array([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).astype(int)).long().to(device))
@@ -641,7 +644,8 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
          den_start_amount = timestep_reduce
          while den_index < DS:
             overwrite = (DS-den_index-1)
-            x_0[:,:,:overwrite,:] = model.make_x_0_from(Tensor([data[offset+i:offset+i+overwrite] for i in range(1,CS+1)]).long().to(device))
+            Y = Tensor([data[offset+den_index+i:offset+den_index+i+overwrite] for i in range(1,CS+1)]).long().to(device)
+            x_0[:,:,:overwrite,:] = model.make_x_0_from(Y)
 
             alphas = np.ones((DS,), dtype=np.float32)
             timesteps = np.zeros((DS,), dtype=np.float32)
@@ -668,8 +672,36 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
 
             x_0 = pred_x_0
 
-         Y = Tensor(data[offset+1:offset+1+CS].astype(int))[start_index:].to(device)
-         pred_y = model.estimate(first_x_0, 0.1, False).argmax(dim=-1)[:,start_index:]
+         Y = Tensor(data[offset+DS:offset+DS+CS].astype(int)).long()[start_index:].to(device)
+         probs_y = model.estimate(first_x_0, 1.0, False)[:,start_index:]
+
+         if False:
+            text = ""
+            for i in range(X.shape[0]):
+               byte = decode([X[i].cpu().numpy().item()])
+               try:
+                  char = byte.decode()
+               except Exception:
+                  char = "<?>"
+               text += char if (i != X.shape[0]-1) else f"<|{char}|>"
+            print(text)
+            
+            probs_np = probs_y.cpu().numpy()[0,-1,:]
+            sort_idx = np.argsort(probs_np)
+
+            top_n = 16
+            top_idx = sort_idx[:top_n:-1]
+            for i in range(top_n):
+               idx = top_idx[i]
+               prob = probs_np[idx]
+               byte = decode([idx])
+               try:
+                  char = byte.decode()
+               except Exception:
+                  char = "<?>"
+               print(f"{idx: >5d}: {prob:.8f} |{char}|")
+
+         pred_y = probs_y.argmax(dim=-1)
          acc += (Y == pred_y).float().mean().cpu().numpy().item()
    
    return acc / iterations
@@ -678,6 +710,6 @@ if __name__ == "__main__":
    # train(phase=1, recover=True)
    # print(generate_ctx(count=16))
 
-   train(phase=2, recover=False)
+   train(phase=2, recover=True)
    # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))
