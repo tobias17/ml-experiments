@@ -14,7 +14,7 @@ class Dictable:
       diff = set(dir(cls)) - set(dir(Dictable))
       return { k: getattr(cls, k) for k in diff }
 
-def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=False, delta=1, offset=0, x_label=None, y_label=None, show_train=True):
+def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=False, delta=1, offset=0, x_label=None, y_label=None, show_train=True, title=None):
    if not os.path.exists( (parent:=os.path.dirname(save_dirpath)) ):
       os.makedirs(parent)
 
@@ -37,6 +37,7 @@ def write_graph(train_data, test_data, save_dirpath, ylim=(0,None), segmented=Fa
    plt.legend()
    if x_label is not None: plt.xlabel(x_label)
    if y_label is not None: plt.ylabel(y_label)
+   if title is not None: plt.title(title)
    figure = plt.gcf()
    figure.set_size_inches(18/1.5, 10/1.5)
    plt.savefig(save_dirpath, dpi=100)

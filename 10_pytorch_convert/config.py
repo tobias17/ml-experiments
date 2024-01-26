@@ -20,10 +20,10 @@ class ModelParams(Dictable):
 class Train:
    learning_rate = 2**-16
    batch_size = 1
-   test_every = 200
-   deep_every = 1000
-   save_every = 10000
-   gen_every  = 10000
+   test_every = 400
+   deep_every = 4000
+   save_every = 20000
+   gen_every  = 20000
    gen_count  = 64
 
    grad_ctx = False
@@ -37,6 +37,10 @@ class Train:
 
 class Phase1Train(Train):
    batch_size = 36
+   test_every = 200
+   deep_every = 1000
+   save_every = 10000
+   gen_every  = 10000
 
    grad_ctx = True
 
@@ -53,6 +57,7 @@ class Phase2Train(Train):
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
+   learning_rate = 2**-17
    batch_size = 1
 
    grad_ctx = True
