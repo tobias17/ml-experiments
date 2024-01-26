@@ -305,7 +305,7 @@ def train(phase:int, token_ptr=0, recover=False):
          else:
             train_accs = data["train_acc"]
             test_accs = data["test_acc"]
-      weights_filepath = f"{weights_folder}/" + Config.save_name.format(phase, step)
+      weights_filepath = f"{weights_folder}/" + Config.save_name.format(phase, f"{step//1000}k")
       if not os.path.exists(weights_filepath):
          raise ValueError(f"Could not find weights file {weights_filepath} with recover=True")
       load_model(model, weights_filepath)
