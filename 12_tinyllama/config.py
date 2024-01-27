@@ -7,13 +7,15 @@ class ModelParams(Dictable):
    time_deltas  = 64
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
-   n_layers     = 16
-   ctx_dim      = 768
-   den_dim      = 768
-   time_dim     = 768//2
+   n_layers     = 22
+   ctx_dim      = 2048
+   den_dim      = 2048
+   time_dim     = 2048//2
    fusion_mult  = 1
-   ctx_heads    = 12
-   den_heads    = 12
+   ctx_heads    = 32
+   ctx_kv_heads = 4
+   den_heads    = 32
+   den_kv_heads = 4
    ctx_ff_mult  = 2
    den_ff_mult  = 2
 

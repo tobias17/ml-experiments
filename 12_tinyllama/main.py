@@ -19,6 +19,18 @@ TO: Dict = { "device": device, "dtype": torch.bfloat16 }
 def prod(collection):
    return reduce(lambda a,b: a*b, collection, 1)
 
+
+
+
+class RMSNorm(Module):
+   def __init__(self, dim, eps=1e-6):
+      super().__init__()
+      self.eps = eps
+      self.weight = torch.ones(dim)
+   def forward(self, x:Tensor) -> Tensor:
+      x = x.float()
+      return (x * (x.pow(2).mean(-1,keepdim=True) + self.eps).rsqrt()) * self.weight
+
 class SelfAttention(Module):
    def __init__(self, query_dim, n_heads, d_head, dropout=Config.dropout, is_causal=False):
       super().__init__()
@@ -68,17 +80,17 @@ class GEGLU(Module):
       return x * self.act(gate)
 
 class FeedForward(Module):
-   def __init__(self, dim, mult=4):
+   def __init__(self, dim, ff_mult):
       super().__init__()
-      self.net = Sequential(
-         GEGLU(dim, dim*mult),
-         Linear(dim*mult, dim),
-      )
+      self.w1 = Linear(dim, dim*ff_mult, bias=False)
+      self.w2 = Linear(dim*ff_mult, dim, bias=False)
+      self.w3 = Linear(dim, dim*ff_mult, bias=False)
+      self.act = SiLU()
    def forward(self, x:Tensor) -> Tensor:
-      return self.net(x)
+      return self.w2(self.act(self.w1(x)) * self.w3(x))
 
 class AttentionBlock(Module):
-   def __init__(self, dim, n_heads, d_head, ff_mult, dropout=Config.dropout, is_causal=False, cross_attn=True):
+   def __init__(self, dim, n_heads, d_head, n_kv_heads, ff_mult, dropout=Config.dropout, is_causal=False, cross_attn=True):
       super().__init__()
       self.norm1 = LayerNorm(dim)
       self.attn1 = SelfAttention(dim, n_heads, d_head, is_causal=is_causal)
