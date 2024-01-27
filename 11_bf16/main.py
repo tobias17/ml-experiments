@@ -450,7 +450,7 @@ def train(phase:int, token_ptr=0, recover=False):
                write_graph(train_accs, test_accs, f"{weights_folder}/p{phase}_graph_shallow_acc.png", ylim=(0,1), segmented=True, delta=token_ptr//(len(train_accs[0]))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Shallow Accuracy")
                if len(deep_acc) > 0:
                   write_graph(deep_acc, deep_acc, f"{weights_folder}/p{phase}_graph_deep_acc.png", ylim=(0,1), delta=token_ptr//(len(deep_acc))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Deep Accuracy")
-                  write_probs(deep_probs, f"{weights_folder}/p{phase}_graph_deep_probs", delta=token_ptr//(len(deep_probs))/div, x_label="tokens (million)", y_label="acc", title=f"Phase {phase} Deep Accuracy")
+                  write_probs(deep_probs, f"{weights_folder}/p{phase}_graph_deep_probs", delta=token_ptr//(len(deep_probs))/div, x_label="tokens (million)", y_label="correct token prob", title=f"Phase {phase} Deep Probabilities")
             s_time = time.time()
             test_index = 0
          else:
@@ -629,7 +629,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
+def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
    probs = []
    all_alphas = make_alphas()
@@ -717,9 +717,9 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    return acc / iterations, [np.percentile(probs_np, p) for p in [75, 50, 25]] # type: ignore
 
 if __name__ == "__main__":
-   train(phase=1, recover=False)
+   # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
    # train(phase=2, recover=False)
-   # train(phase=3, recover=False)
+   train(phase=3, recover=True)
    # print(generate_den(count=64, temperature=0.4))

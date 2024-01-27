@@ -18,7 +18,7 @@ class ModelParams(Dictable):
    den_ff_mult  = 2
 
 class Train:
-   learning_rate = 2**-15
+   learning_rate = 2**-12
    batch_size = 1
    test_every = 400
    deep_every = 4000
@@ -57,7 +57,7 @@ class Phase2Train(Train):
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
-   learning_rate = 2**-17
+   learning_rate = 2**-14
    batch_size = 5
 
    grad_ctx = True
