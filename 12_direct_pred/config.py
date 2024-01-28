@@ -62,7 +62,7 @@ class Phase2Train(Train):
 
 class Phase3Train(Train):
    learning_rate = 2**-14
-   batch_size = 10
+   batch_size = 16
 
    grad_ctx = True
    grad_den = True

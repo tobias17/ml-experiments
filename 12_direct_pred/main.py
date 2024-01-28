@@ -88,6 +88,7 @@ class AttentionBlock(Module):
          self.norm2 = LayerNorm(dim)
          self.attn2 = CrossAttention(dim, n_heads, d_head)
          ff_input_size += dim
+         self.norm4 = LayerNorm(dim)
       self.time_dim = time_dim
       if self.time_dim is not None:
          ff_input_size += self.time_dim
@@ -96,13 +97,14 @@ class AttentionBlock(Module):
       self.dropout = Dropout(dropout)
    def forward(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None, time_latent:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
       h1, k_, v_ = self.attn1(self.norm1(x))
-      hs = [x]
+      hs = [self.norm3(x)]
       if self.cross_attn:
          h2, _, _ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
-         hs.append(x)
+         hs.append(self.norm4(x))
       if self.time_dim is not None:
-         hs.append(time_latent)
-      x = self.dropout(self.ff(self.norm3(torch.cat(hs)))) + x
+         assert time_latent is not None
+         hs.append(time_latent.reshape(1,*time_latent.shape).expand(x.shape[0],*time_latent.shape))
+      x = self.dropout(self.ff(torch.cat(hs, dim=-1))) + x
       return x, k_, v_
    def freeze_parameters(self, is_last:bool):
       self.attn1.freeze_parameters(is_last)
@@ -144,7 +146,7 @@ class FusedTransformer(Module):
       self.den_time_embed = Sequential(
          Linear(time_dim, den_dim*2),
          SiLU(),
-         Linear(den_dim*2, den_dim*2),
+         Linear(den_dim*2, den_dim),
       )
       self.den_dim, self.time_dim = den_dim, time_dim
 
@@ -152,7 +154,7 @@ class FusedTransformer(Module):
       for i in range(n_layers):
          a = AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False)
          # b = TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult)
-         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult, time_dim=den_dim*2)
+         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult, time_dim=den_dim)
          self.layers.append((a,c))
          setattr(self, f"layer{i}_a", a)
          setattr(self, f"layer{i}_c", c)
