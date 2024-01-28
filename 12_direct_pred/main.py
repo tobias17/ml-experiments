@@ -68,34 +68,41 @@ class GEGLU(Module):
       return x * self.act(gate)
 
 class FeedForward(Module):
-   def __init__(self, dim, mult=4):
+   def __init__(self, dim_in, dim_mid, dim_out):
       super().__init__()
-      self.net = Sequential(
-         GEGLU(dim, dim*mult),
-         Linear(dim*mult, dim),
-      )
+      self.w1 = Linear(dim_in,  dim_mid, bias=False)
+      self.w2 = Linear(dim_mid, dim_out, bias=False)
+      self.w3 = Linear(dim_in,  dim_mid, bias=False)
+      self.silu = SiLU()
    def forward(self, x:Tensor) -> Tensor:
-      return self.net(x)
+      return self.w2(self.silu(self.w1(x)) * self.w3(x))
 
 class AttentionBlock(Module):
-   def __init__(self, dim, n_heads, d_head, ff_mult, dropout=Config.dropout, is_causal=False, cross_attn=True):
+   def __init__(self, dim, n_heads, d_head, ff_mult, dropout=Config.dropout, time_dim=None, is_causal=False, cross_attn=True):
       super().__init__()
       self.norm1 = LayerNorm(dim)
       self.attn1 = SelfAttention(dim, n_heads, d_head, is_causal=is_causal)
+      ff_input_size = dim
       self.cross_attn = cross_attn
       if self.cross_attn:
          self.norm2 = LayerNorm(dim)
          self.attn2 = CrossAttention(dim, n_heads, d_head)
+         ff_input_size += dim
+      self.time_dim = time_dim
+      if self.time_dim is not None:
+         ff_input_size += self.time_dim
       self.norm3 = LayerNorm(dim)
-      self.ff    = FeedForward(dim, mult=ff_mult)
+      self.ff    = FeedForward(ff_input_size, dim*ff_mult, dim)
       self.dropout = Dropout(dropout)
-   def forward(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
-      h,k_,v_ = self.attn1(self.norm1(x))
-      x = x + h
+   def forward(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None, time_latent:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
+      h1, k_, v_ = self.attn1(self.norm1(x))
+      hs = [x]
       if self.cross_attn:
-         h,_,_ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
-         x = x + h
-      x = self.dropout(self.ff(self.norm3(x))) + x
+         h2, _, _ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
+         hs.append(x)
+      if self.time_dim is not None:
+         hs.append(time_latent)
+      x = self.dropout(self.ff(self.norm3(torch.cat(hs)))) + x
       return x, k_, v_
    def freeze_parameters(self, is_last:bool):
       self.attn1.freeze_parameters(is_last)
@@ -141,14 +148,13 @@ class FusedTransformer(Module):
       )
       self.den_dim, self.time_dim = den_dim, time_dim
 
-      self.layers: List[Tuple[AttentionBlock,TimeFusion,AttentionBlock]] = []
+      self.layers: List[Tuple[AttentionBlock,AttentionBlock]] = []
       for i in range(n_layers):
          a = AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False)
-         b = TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult)
-         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult)
-         self.layers.append((a,b,c))
+         # b = TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult)
+         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult, time_dim=den_dim*2)
+         self.layers.append((a,c))
          setattr(self, f"layer{i}_a", a)
-         setattr(self, f"layer{i}_b", b)
          setattr(self, f"layer{i}_c", c)
       self.n_layers = n_layers
 
@@ -170,13 +176,12 @@ class FusedTransformer(Module):
          freeze.append(self.den_time_embed)
 
       for i, v in enumerate(self.layers):
-         ctx_layer, time_layer, den_layer = v
+         ctx_layer, den_layer = v
          if tc.grad_ctx:
             ctx_layer.freeze_parameters(i+1 == self.n_layers and (not tc.ctx_tok_loss))
          else:
             freeze.append(ctx_layer)
          if not tc.grad_den:
-            freeze.append(time_layer)
             freeze.append(den_layer)
 
       if not tc.ctx_tok_loss:
@@ -190,7 +195,7 @@ class FusedTransformer(Module):
 
    def forward_ctx_only(self, ctx_toks:Tensor, temperature:float=1.0, use_log=True) -> Tensor:
       x = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
-      for ctx_layer, _, _ in self.layers:
+      for ctx_layer, _ in self.layers:
          x,_,_ = ctx_layer(x)
       return self.ctx_predict(x, temperature, use_log)
 
@@ -209,19 +214,21 @@ class FusedTransformer(Module):
       den_latent = den_latent.reshape(-1,DS,self.den_dim)
       attn_mask  = attn_mask .reshape(-1,DS,attn_mask.shape[-1])
 
-      for ctx_layer, time_layer, den_layer in self.layers:
+      for ctx_layer, den_layer in self.layers:
          ctx_latent,k,v = ctx_layer(ctx_latent)
          k,v = [y.reshape((B,1,*y.shape[1:])).expand((B,T,*y.shape[1:])).reshape((-1,*y.shape[1:])) for y in (k,v,)]
          if detach_ctx:
             k,v = k.detach(),v.detach()
-         den_latent = time_layer(den_latent, time_latent)
-         den_latent,_,_ = den_layer(den_latent, attn_mask, k, v) # type: ignore
+         den_latent,_,_ = den_layer(den_latent, attn_mask, k, v, time_latent) # type: ignore
       
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
    def estimate(self, den_latent:Tensor, temperature=1.0, use_log=True) -> Tensor:
       fnx = self.log_softmax if use_log else self.softmax
       return fnx(self.den_class_head(den_latent).float() / (temperature+1e-10))
+
+
+
 
 
 

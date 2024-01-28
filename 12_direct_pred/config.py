@@ -62,7 +62,7 @@ class Phase2Train(Train):
 
 class Phase3Train(Train):
    learning_rate = 2**-14
-   batch_size = 12
+   batch_size = 10
 
    grad_ctx = True
    grad_den = True
@@ -82,5 +82,5 @@ class Config:
       2: Phase2Train,
       3: Phase3Train,
    }
-   start_phase = 1
+   start_phase = 3
    save_name = "p{0}_model_{1}.safetensors"
