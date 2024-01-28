@@ -7,23 +7,25 @@ class ModelParams(Dictable):
    time_deltas  = 64
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
-   n_layers     = 16
-   ctx_dim      = 768
-   den_dim      = 768
-   time_dim     = 768//2
+   n_layers     = 12
+   ctx_dim      = 512
+   den_dim      = 512
+   time_dim     = 512//2
    fusion_mult  = 1
-   ctx_heads    = 12
-   den_heads    = 12
+   ctx_heads    = 8
+   den_heads    = 8
    ctx_ff_mult  = 2
    den_ff_mult  = 2
 
 class Train:
    learning_rate = 2**-12
    batch_size = 1
-   test_every = 400
-   deep_every = 4000
-   save_every = 20000
-   gen_every  = 20000
+
+   rates_div = 5
+   test_every = 400 //rates_div
+   deep_every = 4000 //rates_div
+   save_every = 20000 //rates_div
+   gen_every  = 20000 //rates_div
    gen_count  = 64
 
    grad_ctx = False
@@ -37,10 +39,10 @@ class Train:
 
 class Phase1Train(Train):
    batch_size = 64
-   test_every = 200
-   deep_every = 1000
-   save_every = 10000
-   gen_every  = 10000
+   test_every = 200 //Train.rates_div
+   deep_every = 1000 //Train.rates_div
+   save_every = 10000 //Train.rates_div
+   gen_every  = 10000 //Train.rates_div
 
    grad_ctx = True
 
@@ -50,9 +52,11 @@ class Phase2Train(Train):
    batch_size = 6
 
    detach_ctx = True
+   grad_ctx = True
    grad_den = True
 
-   den_tok_loss_orig = True
+   ctx_tok_loss = True
+   den_tok_loss_orig = False
    den_tok_loss_pred = True
    den_tok_noise_loss = True
 
@@ -63,7 +67,7 @@ class Phase3Train(Train):
    grad_ctx = True
    grad_den = True
 
-   den_tok_loss_orig = True
+   den_tok_loss_orig = False
    den_tok_loss_pred = True
    den_tok_noise_loss = True
 

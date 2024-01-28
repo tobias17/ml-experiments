@@ -384,9 +384,7 @@ def train(phase:int, token_ptr=0, recover=False):
          x_0 = model.make_x_0_from(Y)
          x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
 
-         e_t, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(**TO), attn_mask, detach_ctx=tc.detach_ctx)
-         pred_x_0 = x_t - e_t
-         
+         pred_x_0, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(**TO), attn_mask, detach_ctx=tc.detach_ctx)
          output = model.estimate(pred_x_0)
 
          if tc.ctx_tok_loss:
@@ -399,7 +397,7 @@ def train(phase:int, token_ptr=0, recover=False):
          if tc.den_tok_noise_loss:
             loss = loss + ((pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape))
 
-         del attn_mask, x_0, pred_x_0, x_t, e_t
+         del attn_mask, x_0, pred_x_0, x_t
       elif tc.ctx_tok_loss:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
          Y = Tensor(Y_tok).long().to(device)
@@ -598,9 +596,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
          attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
          x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
-
-         e_t = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)[0]
-         pred_x_0 = x_t - e_t
+         pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
          while den_start_amount <= timestep_reduce:
             if start_i >= len(toks):
@@ -666,9 +662,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
             attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
             x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
-
-            e_t = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)[0]
-            pred_x_0 = x_t - e_t
+            pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
             while den_start_amount <= timestep_reduce:
                den_index += 1
