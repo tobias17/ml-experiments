@@ -625,7 +625,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
+def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
    probs = []
    all_alphas = make_alphas()
@@ -634,6 +634,8 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
    CS = Config.model_params.ctx_pos_size
    DS = Config.model_params.den_pos_size
    TD = Config.model_params.time_deltas
+
+   DEBUG_PREDS = False
 
    with torch.no_grad():
       for iteration in trange(iterations):
@@ -644,6 +646,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
          x_0 = model.make_x_0_from(Tensor(np.array([data[offset+i:offset+i+DS] for i in range(1,CS+1)]).astype(int)).int().to(device))
          x_0 = x_0.reshape(1,*x_0.shape)
 
+         preds = []
          den_index = 0
          den_start_amount = timestep_reduce
          while den_index < DS:
@@ -664,6 +667,11 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
             x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
             pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
+            if DEBUG_PREDS:
+               Z = Tensor(data[offset+DS:offset+DS+CS].astype(int)).int()[start_index:].to(device)
+               pred_probs = model.estimate(pred_x_0, 1.0, False)[:,start_index:]
+               preds.append(np.array([pred_probs[0,i,overwrite,Z[i]].cpu().numpy().item() for i in range(Z.shape[0])]))
+
             while den_start_amount <= timestep_reduce:
                den_index += 1
                first_x_0 = pred_x_0[:,:,0]
@@ -677,6 +685,19 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
          Y = Tensor(data[offset+DS:offset+DS+CS].astype(int)).int()[start_index:].to(device)
          probs_y = model.estimate(first_x_0, 1.0, False)[:,start_index:]
          probs.append(np.array([probs_y[0,i,Y[i]].cpu().numpy().item() for i in range(Y.shape[0])]))
+
+         if DEBUG_PREDS:
+            plt.clf()
+            for i in range(preds[0].shape[0]):
+               byte = decode([Y[i].cpu().numpy().item()]) # type: ignore
+               try:
+                  char = byte.decode()
+               except Exception:
+                  char = "<?>"
+               vals = [p[i] for p in preds]
+               plt.plot(np.arange(len(vals)), vals, label=f"pred_{i}_{char}")
+            plt.legend()
+            plt.show()
 
          if False:
             text = ""
@@ -706,7 +727,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
 
          pred_y = probs_y.argmax(dim=-1)
          acc += (Y == pred_y).float().mean().cpu().numpy().item()
-   
+
    probs_np = np.array(probs).flatten()
    return acc / iterations, [np.percentile(probs_np, p) for p in [75, 50, 25]] # type: ignore
 
@@ -714,6 +735,6 @@ if __name__ == "__main__":
    # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=False)
-   train(phase=3, recover=True)
+   # train(phase=2, recover=True)
+   train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))
