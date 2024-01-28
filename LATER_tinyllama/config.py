@@ -65,7 +65,7 @@ class Phase3Train(Train):
    grad_ctx = True
    grad_den = True
 
-   den_tok_loss_orig = True
+   # den_tok_loss_orig = True
    den_tok_loss_pred = True
    den_tok_noise_loss = True
 
