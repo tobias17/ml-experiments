@@ -644,7 +644,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    DS = Config.model_params.den_pos_size
    TD = Config.model_params.time_deltas
 
-   DEBUG_PREDS = False
+   DEBUG_PREDS = True
 
    with torch.no_grad():
       for iteration in trange(iterations):
@@ -741,9 +741,9 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    return acc / iterations, [np.percentile(probs_np, p) for p in [75, 50, 25]] # type: ignore
 
 if __name__ == "__main__":
-   # train(phase=1, recover=False)
+   train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=True)
-   train(phase=3, recover=False)
+   # train(phase=2, recover=False)
+   # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))

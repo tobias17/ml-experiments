@@ -21,9 +21,9 @@ class Train:
    learning_rate = 2**-12
    batch_size = 1
 
-   rates_div = 5
-   test_every = 400 //rates_div
-   deep_every = 4000 //rates_div
+   rates_div = 1
+   test_every = 400   //rates_div
+   deep_every = 4000  //rates_div
    save_every = 20000 //rates_div
    gen_every  = 20000 //rates_div
    gen_count  = 64
@@ -38,8 +38,8 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   batch_size = 96
-   test_every = 200 //Train.rates_div
+   batch_size = 128
+   test_every = 200   //Train.rates_div
    save_every = 10000 //Train.rates_div
    gen_every  = 10000 //Train.rates_div
 
@@ -48,7 +48,7 @@ class Phase1Train(Train):
    ctx_tok_loss = True
 
 class Phase2Train(Train):
-   batch_size = 10
+   batch_size = 12
 
    detach_ctx = True
    grad_ctx = True
@@ -82,5 +82,5 @@ class Config:
       2: Phase2Train,
       3: Phase3Train,
    }
-   start_phase = 3
+   start_phase = 1
    save_name = "p{0}_model_{1}.safetensors"
