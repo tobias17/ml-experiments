@@ -397,7 +397,7 @@ def train(phase:int, token_ptr=0, recover=False):
          output = model.estimate(pred_x_0)
 
          if tc.ctx_tok_loss:
-            ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.float32)
+            ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
             loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok).long().to(device))
          if tc.den_tok_loss_orig:
             loss = loss + loss_fnx(model.estimate(x_0), Y)
@@ -644,7 +644,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    DS = Config.model_params.den_pos_size
    TD = Config.model_params.time_deltas
 
-   DEBUG_PREDS = True
+   DEBUG_PREDS = False
 
    with torch.no_grad():
       for iteration in trange(iterations):
@@ -741,9 +741,9 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    return acc / iterations, [np.percentile(probs_np, p) for p in [75, 50, 25]] # type: ignore
 
 if __name__ == "__main__":
-   train(phase=1, recover=False)
+   # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=False)
+   train(phase=2, recover=False)
    # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))

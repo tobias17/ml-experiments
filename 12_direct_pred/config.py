@@ -21,7 +21,7 @@ class Train:
    learning_rate = 2**-12
    batch_size = 1
 
-   rates_div = 1
+   rates_div = 5
    test_every = 400   //rates_div
    deep_every = 4000  //rates_div
    save_every = 20000 //rates_div
@@ -38,7 +38,7 @@ class Train:
    den_tok_noise_loss = False
 
 class Phase1Train(Train):
-   batch_size = 128
+   batch_size = 96
    test_every = 200   //Train.rates_div
    save_every = 10000 //Train.rates_div
    gen_every  = 10000 //Train.rates_div
@@ -56,8 +56,8 @@ class Phase2Train(Train):
 
    ctx_tok_loss = True
 
-   den_tok_loss_orig = True
-   den_tok_loss_pred = False
+   den_tok_loss_orig  = True
+   den_tok_loss_pred  = False
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
@@ -67,8 +67,8 @@ class Phase3Train(Train):
    grad_ctx = True
    grad_den = True
 
-   den_tok_loss_orig = False
-   den_tok_loss_pred = True
+   den_tok_loss_orig  = False
+   den_tok_loss_pred  = True
    den_tok_noise_loss = True
 
 class Config:
