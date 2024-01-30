@@ -404,7 +404,7 @@ def train(phase:int, token_ptr=0, recover=False):
          if tc.den_tok_loss_pred:
             loss = loss + loss_fnx(output, (Y))
          if tc.den_tok_noise_loss:
-            loss = loss + ((pred_x_0 - x_0).pow(2).sum() / prod(pred_x_0.shape))
+            loss = loss + (pred_x_0 - x_0).abs().pow(2).mean()
 
          del attn_mask, x_0, pred_x_0, x_t
       elif tc.ctx_tok_loss:
@@ -509,11 +509,11 @@ def train(phase:int, token_ptr=0, recover=False):
 
 
 
-text = """SEBASTIAN:
-Bate, I beseech you, widow Dido.
+text = """Q: Where is the space needle located?
+A: Downtown Seattle
 
-ANTONIO:
-"""
+Q: What is the distance between the Earth and the Moon?
+A:"""
 
 def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4):
    with torch.no_grad():
@@ -634,7 +634,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
+def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
    probs = []
    all_alphas = make_alphas()
@@ -657,11 +657,12 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
 
          preds = []
          den_index = 0
-         den_start_amount = timestep_reduce
+         den_start_amount = TD # timestep_reduce
          while den_index < DS:
             overwrite = (DS-den_index-1)
-            Y = Tensor(np.array([data[offset+den_index+i:offset+den_index+i+overwrite] for i in range(1,CS+1)], dtype=np.int32)).int().to(device)
-            x_0[:,:,:overwrite,:] = model.make_x_0_from(Y)
+            if overwrite > 0:
+               Y = Tensor(np.array([data[offset+den_index+i:offset+den_index+i+overwrite] for i in range(1,CS+1)], dtype=np.int32)).int().to(device)
+               x_0[:,:,:overwrite,:] = model.make_x_0_from(Y)
 
             alphas = np.ones((DS,), dtype=np.float32)
             timesteps = np.zeros((DS,), dtype=np.float32)
