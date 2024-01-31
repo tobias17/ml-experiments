@@ -143,18 +143,18 @@ class FusedTransformer(Module):
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
       self.den_tok_embed  = Embedding(vocab_size, den_dim)
-      self.den_time_embed = Sequential(
-         Linear(time_dim, den_dim*2),
-         SiLU(),
-         Linear(den_dim*2, den_dim),
-      )
+      # self.den_time_embed = Sequential(
+      #    Linear(time_dim, den_dim*2),
+      #    SiLU(),
+      #    Linear(den_dim*2, den_dim),
+      # )
       self.den_dim, self.time_dim = den_dim, time_dim
 
       self.layers: List[Tuple[AttentionBlock,AttentionBlock]] = []
       for i in range(n_layers):
          a = AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False)
          # b = TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult)
-         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult, time_dim=den_dim)
+         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult) #, time_dim=den_dim)
          self.layers.append((a,c))
          setattr(self, f"layer{i}_a", a)
          setattr(self, f"layer{i}_c", c)
@@ -175,7 +175,7 @@ class FusedTransformer(Module):
          freeze.append(self.ctx_pos_embed)
       if not tc.grad_den:
          freeze.append(self.den_tok_embed)
-         freeze.append(self.den_time_embed)
+         # freeze.append(self.den_time_embed)
 
       for i, v in enumerate(self.layers):
          ctx_layer, den_layer = v
@@ -210,7 +210,7 @@ class FusedTransformer(Module):
 
    def forward(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tuple[Tensor, Tensor]:
       ctx_latent  = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
-      time_latent = self.den_time_embed(timestep_embedding(timesteps.reshape((-1,1)), self.time_dim))
+      # time_latent = self.den_time_embed(timestep_embedding(timesteps.reshape((-1,1)), self.time_dim))
 
       B,T,DS,_ = attn_mask.shape
       den_latent = den_latent.reshape(-1,DS,self.den_dim)
@@ -221,7 +221,7 @@ class FusedTransformer(Module):
          k,v = [y.reshape((B,1,*y.shape[1:])).expand((B,T,*y.shape[1:])).reshape((-1,*y.shape[1:])) for y in (k,v,)]
          if detach_ctx:
             k,v = k.detach(),v.detach()
-         den_latent,_,_ = den_layer(den_latent, attn_mask, k, v, time_latent) # type: ignore
+         den_latent,_,_ = den_layer(den_latent, attn_mask, k, v)
       
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
@@ -390,23 +390,24 @@ def train(phase:int, token_ptr=0, recover=False):
          alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
 
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
-         x_0 = model.make_x_0_from(Y)
-         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
+         # x_0 = model.make_x_0_from(Y)
+         # x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
 
+         x_t = torch.zeros((BS,CS,DS,Config.model_params.den_dim)).to(**TO)
          pred_x_0, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(**TO), attn_mask, detach_ctx=tc.detach_ctx)
          output = model.estimate(pred_x_0)
 
-         if tc.ctx_tok_loss:
-            ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
-            loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok).long().to(device))
-         if tc.den_tok_loss_orig:
-            loss = loss + loss_fnx(model.estimate(x_0), Y)
+         # if tc.ctx_tok_loss:
+         #    ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
+         #    loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok).long().to(device))
+         # if tc.den_tok_loss_orig:
+         #    loss = loss + loss_fnx(model.estimate(x_0), Y)
          if tc.den_tok_loss_pred:
             loss = loss + loss_fnx(output, (Y))
-         if tc.den_tok_noise_loss:
-            loss = loss + (pred_x_0 - x_0).abs().pow(2).mean()
+         # if tc.den_tok_noise_loss:
+         #    loss = loss + (pred_x_0 - x_0).abs().pow(2).mean()
 
-         del attn_mask, x_0, pred_x_0, x_t
+         # del attn_mask, x_0, pred_x_0, x_t
       elif tc.ctx_tok_loss:
          Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
          Y = Tensor(Y_tok).long().to(device)
@@ -553,7 +554,7 @@ def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4
 
       return all_output
 
-def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
+def generate_den(count=20, timestep_reduce=256, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
    with torch.no_grad():
 
       global encode, decode
@@ -604,7 +605,8 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
          attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
-         x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
+         # x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
+         x_t = torch.zeros((BS,1,DS,Config.model_params.den_dim))
          pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
          while den_start_amount <= timestep_reduce:
@@ -634,7 +636,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
+def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=256, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
    probs = []
    all_alphas = make_alphas()
@@ -657,7 +659,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
 
          preds = []
          den_index = 0
-         den_start_amount = TD # timestep_reduce
+         den_start_amount = timestep_reduce
          while den_index < DS:
             overwrite = (DS-den_index-1)
             if overwrite > 0:
@@ -745,6 +747,6 @@ if __name__ == "__main__":
    # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   train(phase=2, recover=False)
-   # train(phase=3, recover=False)
+   # train(phase=2, recover=False)
+   train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))

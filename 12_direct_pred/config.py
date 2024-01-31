@@ -20,7 +20,7 @@ class ModelParams(Dictable):
 class Train:
    learning_rate = 2**-12
    batch_size = 1
-   rates_div  = 10
+   rates_div  = 5
    test_every = 400   //rates_div
    deep_every = 2000  //rates_div
    save_every = 20000 //rates_div
@@ -55,20 +55,20 @@ class Phase2Train(Train):
 
    ctx_tok_loss = True
 
-   den_tok_loss_orig  = True
-   den_tok_loss_pred  = False
-   den_tok_noise_loss = True
+   # den_tok_loss_orig  = True
+   den_tok_loss_pred  = True
+   # den_tok_noise_loss = True
 
 class Phase3Train(Train):
-   learning_rate = 2**-15
-   batch_size = 16
+   learning_rate = 2**-11
+   batch_size = 128
 
    grad_ctx = True
    grad_den = True
 
-   den_tok_loss_orig  = False
+   # den_tok_loss_orig  = False
    den_tok_loss_pred  = True
-   den_tok_noise_loss = True
+   # den_tok_noise_loss = True
 
 class Config:
    dataset = "datasets/openweb_{0}.bin"
@@ -81,5 +81,5 @@ class Config:
       2: Phase2Train,
       3: Phase3Train,
    }
-   start_phase = 1
+   start_phase = 2
    save_name = "p{0}_model_{1}.safetensors"
