@@ -97,10 +97,10 @@ class AttentionBlock(Module):
       self.dropout = Dropout(dropout)
    def forward(self, x, attn_mask:Optional[Tensor]=None, k:Optional[Tensor]=None, v:Optional[Tensor]=None, time_latent:Optional[Tensor]=None) -> Tuple[Tensor, Tensor, Tensor]:
       h1, k_, v_ = self.attn1(self.norm1(x))
-      hs = [self.norm3(x)]
+      hs = [self.norm3(h1)]
       if self.cross_attn:
          h2, _, _ = self.attn2(self.norm2(x), attn_mask=attn_mask, k=k, v=v)
-         hs.append(self.norm4(x))
+         hs.append(self.norm4(h2))
       if self.time_dim is not None:
          assert time_latent is not None
          hs.append(time_latent.reshape(1,*time_latent.shape).expand(x.shape[0],*time_latent.shape))
@@ -747,6 +747,6 @@ if __name__ == "__main__":
    # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=False)
-   train(phase=3, recover=False)
+   train(phase=2, recover=False)
+   # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))
