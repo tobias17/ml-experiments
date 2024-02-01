@@ -390,22 +390,22 @@ def train(phase:int, token_ptr=0, recover=False):
          alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
 
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
-         # x_0 = model.make_x_0_from(Y)
-         # x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
+         x_0 = model.make_x_0_from(Y)
+         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
 
-         x_t = torch.zeros((BS,CS,DS,Config.model_params.den_dim)).to(**TO)
+         # x_t = torch.zeros((BS,CS,DS,Config.model_params.den_dim)).to(**TO)
          pred_x_0, ctx_latent = model(x_t, X, Tensor(timesteps).detach().to(**TO), attn_mask, detach_ctx=tc.detach_ctx)
          output = model.estimate(pred_x_0)
 
-         # if tc.ctx_tok_loss:
-         #    ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
-         #    loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok).long().to(device))
-         # if tc.den_tok_loss_orig:
-         #    loss = loss + loss_fnx(model.estimate(x_0), Y)
+         if tc.ctx_tok_loss:
+            ctx_Y_tok = np.array([data[i+1:i+1+CS] for i in index], dtype=np.int64)
+            loss = loss + loss_fnx(model.ctx_predict(ctx_latent), Tensor(ctx_Y_tok).long().to(device))
+         if tc.den_tok_loss_orig:
+            loss = loss + loss_fnx(model.estimate(x_0), Y)
          if tc.den_tok_loss_pred:
             loss = loss + loss_fnx(output, (Y))
-         # if tc.den_tok_noise_loss:
-         #    loss = loss + (pred_x_0 - x_0).abs().pow(2).mean()
+         if tc.den_tok_noise_loss:
+            loss = loss + (pred_x_0 - x_0).abs().pow(2).mean()
 
          # del attn_mask, x_0, pred_x_0, x_t
       elif tc.ctx_tok_loss:
@@ -554,7 +554,7 @@ def generate_ctx(count=8, model=None, start=text, archive=False, temperature=0.4
 
       return all_output
 
-def generate_den(count=20, timestep_reduce=256, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
+def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=None, start=text, archive=False, temperature=0.4):
    with torch.no_grad():
 
       global encode, decode
@@ -605,8 +605,8 @@ def generate_den(count=20, timestep_reduce=256, model:Optional[FusedTransformer]
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
          attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
-         # x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
-         x_t = torch.zeros((BS,1,DS,Config.model_params.den_dim))
+         x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
+         # x_t = torch.zeros((BS,1,DS,Config.model_params.den_dim))
          pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
          while den_start_amount <= timestep_reduce:
@@ -636,7 +636,7 @@ def generate_den(count=20, timestep_reduce=256, model:Optional[FusedTransformer]
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=256, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
+def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
    probs = []
    all_alphas = make_alphas()

@@ -4,9 +4,9 @@ from typing import Dict
 class ModelParams(Dictable):
    vocab_size   = 50304
    timesteps    = 256
-   time_deltas  = 256
+   time_deltas  = 128
    ctx_pos_size = 64
-   den_pos_size = (timesteps // time_deltas) #+ 1
+   den_pos_size = (timesteps // time_deltas) + 1
    n_layers     = 12
    ctx_dim      = 512
    den_dim      = 512
@@ -20,7 +20,7 @@ class ModelParams(Dictable):
 class Train:
    learning_rate = 2**-12
    batch_size = 1
-   rates_div  = 5
+   rates_div  = 1
    test_every = 400   //rates_div
    deep_every = 2000  //rates_div
    save_every = 20000 //rates_div
@@ -47,7 +47,7 @@ class Phase1Train(Train):
    ctx_tok_loss = True
 
 class Phase2Train(Train):
-   batch_size = 96
+   batch_size = 24
 
    detach_ctx = True
    grad_ctx = True
@@ -55,13 +55,13 @@ class Phase2Train(Train):
 
    ctx_tok_loss = True
 
-   # den_tok_loss_orig  = True
+   den_tok_loss_orig  = True
    den_tok_loss_pred  = True
-   # den_tok_noise_loss = True
+   den_tok_noise_loss = True
 
 class Phase3Train(Train):
    learning_rate = 2**-11
-   batch_size = 128
+   batch_size = 32
 
    grad_ctx = True
    grad_den = True
