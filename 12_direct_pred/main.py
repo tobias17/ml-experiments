@@ -143,18 +143,18 @@ class FusedTransformer(Module):
       self.ctx_pos_embed = Embedding(ctx_pos_size, ctx_dim)
 
       self.den_tok_embed  = Embedding(vocab_size, den_dim)
-      # self.den_time_embed = Sequential(
-      #    Linear(time_dim, den_dim*2),
-      #    SiLU(),
-      #    Linear(den_dim*2, den_dim),
-      # )
+      self.den_time_embed = Sequential(
+         Linear(time_dim, den_dim*2),
+         SiLU(),
+         Linear(den_dim*2, den_dim),
+      )
       self.den_dim, self.time_dim = den_dim, time_dim
 
       self.layers: List[Tuple[AttentionBlock,AttentionBlock]] = []
       for i in range(n_layers):
          a = AttentionBlock(ctx_dim, ctx_heads, ctx_dim//ctx_heads, ctx_ff_mult, is_causal=True, cross_attn=False)
          # b = TimeFusion(den_dim, den_dim*2, den_dim*fusion_mult)
-         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult) #, time_dim=den_dim)
+         c = AttentionBlock(den_dim, den_heads, den_dim//den_heads, den_ff_mult, time_dim=den_dim)
          self.layers.append((a,c))
          setattr(self, f"layer{i}_a", a)
          setattr(self, f"layer{i}_c", c)
@@ -175,7 +175,7 @@ class FusedTransformer(Module):
          freeze.append(self.ctx_pos_embed)
       if not tc.grad_den:
          freeze.append(self.den_tok_embed)
-         # freeze.append(self.den_time_embed)
+         freeze.append(self.den_time_embed)
 
       for i, v in enumerate(self.layers):
          ctx_layer, den_layer = v
@@ -210,7 +210,7 @@ class FusedTransformer(Module):
 
    def forward(self, den_latent:Tensor, ctx_toks:Tensor, timesteps:Tensor, attn_mask:Tensor, detach_ctx:bool=False) -> Tuple[Tensor, Tensor]:
       ctx_latent  = self.ctx_tok_embed(ctx_toks) + self.ctx_pos_embed(torch.arange(0, ctx_toks.shape[-1], requires_grad=False).reshape((1,-1)))
-      # time_latent = self.den_time_embed(timestep_embedding(timesteps.reshape((-1,1)), self.time_dim))
+      time_latent = self.den_time_embed(timestep_embedding(timesteps.reshape((-1,1)), self.time_dim))
 
       B,T,DS,_ = attn_mask.shape
       den_latent = den_latent.reshape(-1,DS,self.den_dim)
@@ -221,7 +221,7 @@ class FusedTransformer(Module):
          k,v = [y.reshape((B,1,*y.shape[1:])).expand((B,T,*y.shape[1:])).reshape((-1,*y.shape[1:])) for y in (k,v,)]
          if detach_ctx:
             k,v = k.detach(),v.detach()
-         den_latent,_,_ = den_layer(den_latent, attn_mask, k, v)
+         den_latent,_,_ = den_layer(den_latent, attn_mask, k, v, time_latent)
       
       return den_latent.reshape((B,T,DS,self.den_dim)), ctx_latent
 
