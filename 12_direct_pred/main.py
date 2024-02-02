@@ -387,8 +387,12 @@ def train(phase:int, token_ptr=0, recover=False):
             ts = min(diff_start_amount + i*TD, TS - 1)
             alphas[i] = all_alphas[int(ts)]
             timesteps[i] = ts
+         alphas_np = alphas
          alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
 
+         if test_index == 0:
+            alphas *= torch.rand_like(alphas)
+   
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
          x_0 = model.make_x_0_from(Y)
          x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO)).detach() # type: ignore
@@ -605,8 +609,8 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)[:,data_i-1:data_i,:,:]
          attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
-         x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
          # x_t = torch.zeros((BS,1,DS,Config.model_params.den_dim))
+         x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO))
          pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
          while den_start_amount <= timestep_reduce:
@@ -672,11 +676,12 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
                ts = min(den_start_amount + i*TD, TS-1)
                alphas[i] = all_alphas[int(ts)]
                timesteps[i] = ts
+            alphas_np = alphas
             alphas = Tensor(alphas).reshape(1,1,DS,1).to(**TO) # type: ignore
             attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS)
             attn_mask = Tensor(attn_mask.cpu().numpy()).to(**TO)
 
-            x_t = (x_0*alphas + torch.randn(BS,1,Config.model_params.den_dim, dtype=torch.float32)*(1-alphas)).to(**TO)
+            x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO))
             pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
             if DEBUG_PREDS:
@@ -687,9 +692,9 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
             while den_start_amount <= timestep_reduce:
                den_index += 1
                first_x_0 = pred_x_0[:,:,0]
-               pred_x_0 = torch.cat([pred_x_0[:,:,1:], torch.zeros(*pred_x_0.shape[:2],1,pred_x_0.shape[-1])], dim=-2).to(**TO)
-               den_start_amount += TD
+               pred_x_0[:,:,:-1] = pred_x_0[:,:,1:]
                X = Tensor(data[offset+den_index:offset+den_index+CS].astype(int)).int().to(device)
+               den_start_amount += TD
             den_start_amount -= timestep_reduce
 
             x_0 = pred_x_0
@@ -747,6 +752,6 @@ if __name__ == "__main__":
    # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   train(phase=2, recover=False)
-   # train(phase=3, recover=False)
+   # train(phase=2, recover=False)
+   train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))
