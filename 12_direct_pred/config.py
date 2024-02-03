@@ -22,7 +22,7 @@ class Train:
    batch_size = 1
    rates_div  = 10
    test_every = 400   //rates_div
-   deep_every = 2000  //rates_div
+   deep_every = 200  //rates_div
    save_every = 20000 //rates_div
    gen_every  = 20000 //rates_div
    gen_count  = 64

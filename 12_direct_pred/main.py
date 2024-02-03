@@ -391,7 +391,7 @@ def train(phase:int, token_ptr=0, recover=False):
          alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
 
          if test_index == 0:
-            alphas *= torch.rand_like(alphas)
+            alphas *= torch.rand_like(alphas) # type: ignore
    
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
          x_0 = model.make_x_0_from(Y)
@@ -651,6 +651,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
    TD = Config.model_params.time_deltas
 
    DEBUG_PREDS = False
+   DEBUG_ACC   = False
 
    with torch.no_grad():
       for iteration in trange(iterations):
@@ -684,6 +685,13 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
             x_t = x_0*alphas + ((1-alphas)*torch.randn(*x_0.shape).to(**TO))
             pred_x_0, _ = model(x_t, X, Tensor(timesteps).int().to(device), attn_mask)
 
+            if DEBUG_ACC:
+               print("========")
+               Y = Tensor(np.array([data[offset+den_index+i:offset+den_index+i+DS] for i in range(1,CS+1)], dtype=np.int32)).int().to(device)
+               pred = model.estimate(pred_x_0[0,:,overwrite]).argmax(-1)
+               acc = (Y[:,overwrite] == pred).float().mean().cpu().numpy().item()
+               print(acc)
+
             if DEBUG_PREDS:
                Z = Tensor(data[offset+DS:offset+DS+CS].astype(int)).int()[start_index:].to(device)
                pred_probs = model.estimate(pred_x_0, 1.0, False)[:,start_index:]
@@ -695,6 +703,12 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_redu
                pred_x_0[:,:,:-1] = pred_x_0[:,:,1:]
                X = Tensor(data[offset+den_index:offset+den_index+CS].astype(int)).int().to(device)
                den_start_amount += TD
+
+               if DEBUG_ACC and overwrite > 0:
+                  pred = model.estimate(pred_x_0[0,:,overwrite-1]).argmax(-1)
+                  acc = (Y[:,overwrite] == pred).float().mean().cpu().numpy().item()
+                  print(acc)
+                  z = 0
             den_start_amount -= timestep_reduce
 
             x_0 = pred_x_0
@@ -753,5 +767,5 @@ if __name__ == "__main__":
    # print(generate_ctx(count=16))
 
    # train(phase=2, recover=False)
-   train(phase=3, recover=False)
+   train(phase=3, recover=True)
    # print(generate_den(count=64, temperature=0.4))
