@@ -3,8 +3,8 @@ from typing import Dict
 
 class ModelParams(Dictable):
    vocab_size   = 50304
-   timesteps    = 256
-   time_deltas  = 128
+   timesteps    = 512
+   time_deltas  = 64
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
    n_layers     = 12
@@ -18,11 +18,11 @@ class ModelParams(Dictable):
    den_ff_mult  = 2
 
 class Train:
-   learning_rate = 2**-11
+   learning_rate = 2**-12
    batch_size = 1
-   rates_div  = 10
+   rates_div  = 2
    test_every = 400   //rates_div
-   deep_every = 200  //rates_div
+   deep_every = 2000  //rates_div
    save_every = 20000 //rates_div
    gen_every  = 20000 //rates_div
    gen_count  = 64
@@ -47,7 +47,7 @@ class Phase1Train(Train):
    ctx_tok_loss = True
 
 class Phase2Train(Train):
-   batch_size = 24
+   batch_size = 10
 
    detach_ctx = True
    grad_ctx = True
@@ -60,7 +60,7 @@ class Phase2Train(Train):
    den_tok_noise_loss = True
 
 class Phase3Train(Train):
-   batch_size = 24
+   batch_size = 12
 
    grad_ctx = True
    grad_den = True

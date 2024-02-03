@@ -276,7 +276,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 
-def train(phase:int, token_ptr=0, recover=False):
+def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.5):
    tc = Config.train[phase]
    phase_offset = (phase-1) * 800_000_000
 
@@ -390,8 +390,9 @@ def train(phase:int, token_ptr=0, recover=False):
          alphas_np = alphas
          alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
 
-         if test_index == 0:
-            alphas *= torch.rand_like(alphas) # type: ignore
+         if test_index == 0 and corrupt_perc > 0:
+            corrupt = torch.rand_like(alphas) # type: ignore
+            alphas = (1-corrupt_perc) * alphas + corrupt_perc * corrupt
    
          attn_mask = torch.ones(CS,CS).tril(0).bool().reshape(1,CS,1,CS).expand(BS,CS,DS,CS).to(device)
          x_0 = model.make_x_0_from(Y)
@@ -640,7 +641,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
             output += "<?>"
       return output
 
-def deep_test_den(data, model:FusedTransformer, iterations:int=32, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
+def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_reduce:int=8, start_index:int=Config.model_params.ctx_pos_size//2) -> Tuple[float,Tuple[float,float,float]]:
    acc = 0
    probs = []
    all_alphas = make_alphas()
