@@ -7,6 +7,7 @@ from typing import Dict
 class Schedules(Enum):
    LINEAR = auto()
    SQRT   = auto()
+   SPLIT  = auto()
 
 class Dictable:
    @classmethod

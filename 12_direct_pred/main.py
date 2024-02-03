@@ -236,7 +236,7 @@ class FusedTransformer(Module):
 
 import matplotlib.pyplot as plt # type: ignore
 
-def make_alphas(show=False) -> np.ndarray:
+def make_alphas(show=True) -> np.ndarray:
    T = Config.model_params.timesteps
    a = np.zeros((T,), dtype=np.float32)
    for i in range(T):
@@ -244,9 +244,17 @@ def make_alphas(show=False) -> np.ndarray:
          a[i] = 1.0 - (i / (T-1))
       elif Config.schedule == Schedules.SQRT:
          a[i] = 1.0 - (i / (T-1))**0.5
+      elif Config.schedule == Schedules.SPLIT:
+         H = T//2
+         S = 0.9
+         if i < H:
+            a[i] = S + (1.0 - S) * (1.0 - i/H)
+         else:
+            a[i] = (1.0 - ((i-H) / (T-H-1))**0.5) * S
       else:
          raise NotImplementedError()
    if show:
+      print(min(a), max(a))
       plt.plot(np.arange(T), a)
       plt.show()
    return a
@@ -276,7 +284,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 
-def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.5):
+def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.1):
    tc = Config.train[phase]
    phase_offset = (phase-1) * 800_000_000
 
@@ -652,7 +660,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    TD = Config.model_params.time_deltas
 
    DEBUG_PREDS = False
-   DEBUG_ACC   = False
+   DEBUG_ACC   = True
 
    with torch.no_grad():
       for iteration in trange(iterations):
@@ -767,6 +775,6 @@ if __name__ == "__main__":
    # train(phase=1, recover=False)
    # print(generate_ctx(count=16))
 
-   # train(phase=2, recover=False)
-   train(phase=3, recover=True)
+   train(phase=2, recover=False)
+   # train(phase=3, recover=True)
    # print(generate_den(count=64, temperature=0.4))

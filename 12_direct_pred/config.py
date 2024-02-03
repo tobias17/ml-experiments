@@ -3,7 +3,7 @@ from typing import Dict
 
 class ModelParams(Dictable):
    vocab_size   = 50304
-   timesteps    = 512
+   timesteps    = 256
    time_deltas  = 64
    ctx_pos_size = 64
    den_pos_size = (timesteps // time_deltas) + 1
@@ -22,7 +22,7 @@ class Train:
    batch_size = 1
    rates_div  = 2
    test_every = 400   //rates_div
-   deep_every = 2000  //rates_div
+   deep_every = 200  //rates_div
    save_every = 20000 //rates_div
    gen_every  = 20000 //rates_div
    gen_count  = 64
@@ -74,7 +74,7 @@ class Config:
    dropout = 0.1
 
    model_params = ModelParams
-   schedule = Schedules.SQRT
+   schedule = Schedules.SPLIT
    train: Dict[int, type[Train]] = {
       1: Phase1Train,
       2: Phase2Train,
