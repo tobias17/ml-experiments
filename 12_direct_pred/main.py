@@ -236,7 +236,7 @@ class FusedTransformer(Module):
 
 import matplotlib.pyplot as plt # type: ignore
 
-def make_alphas(show=True) -> np.ndarray:
+def make_alphas(show=False) -> np.ndarray:
    T = Config.model_params.timesteps
    a = np.zeros((T,), dtype=np.float32)
    for i in range(T):
@@ -251,6 +251,14 @@ def make_alphas(show=True) -> np.ndarray:
             a[i] = S + (1.0 - S) * (1.0 - i/H)
          else:
             a[i] = (1.0 - ((i-H) / (T-H-1))**0.5) * S
+      elif Config.schedule == Schedules.ONRAMP:
+         TD = Config.model_params.time_deltas
+         H = T - TD
+         S = 0.7
+         if i < H:
+            a[i] = S + (1.0 - S) * (1.0 - (i / H))
+         else:
+            a[i] = S * (1.0 - ((i - H) / TD))
       else:
          raise NotImplementedError()
    if show:
@@ -284,7 +292,7 @@ def load_latest_weight(model, model_type, archive=False, phase:Optional[int]=Non
 
 
 
-def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.1):
+def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.2):
    tc = Config.train[phase]
    phase_offset = (phase-1) * 800_000_000
 
@@ -660,7 +668,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
    TD = Config.model_params.time_deltas
 
    DEBUG_PREDS = False
-   DEBUG_ACC   = True
+   DEBUG_ACC   = False
 
    with torch.no_grad():
       for iteration in trange(iterations):
@@ -776,5 +784,5 @@ if __name__ == "__main__":
    # print(generate_ctx(count=16))
 
    train(phase=2, recover=False)
-   # train(phase=3, recover=True)
+   # train(phase=3, recover=False)
    # print(generate_den(count=64, temperature=0.4))

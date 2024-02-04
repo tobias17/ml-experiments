@@ -8,6 +8,7 @@ class Schedules(Enum):
    LINEAR = auto()
    SQRT   = auto()
    SPLIT  = auto()
+   ONRAMP = auto()
 
 class Dictable:
    @classmethod
