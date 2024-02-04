@@ -258,7 +258,7 @@ def make_alphas(show=False) -> np.ndarray:
          if i < H:
             a[i] = S + (1.0 - S) * (1.0 - (i / H))
          else:
-            a[i] = S * (1.0 - ((i - H) / TD))
+            a[i] = S * (1.0 - ((i - H + 1) / TD))
       else:
          raise NotImplementedError()
    if show:
@@ -395,7 +395,7 @@ def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.2):
          Y_tok = np.array([[data[i+j:i+j+DS] for j in range(1,CS+1)] for i in index], dtype=np.float32)
          Y = Tensor(Y_tok).long().detach().to(device)
 
-         diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD // 2
+         diff_start_amount = np.random.randint(1, TD+1) if test_index==0 else TD-1
 
          alphas = np.ones((DS,), dtype=np.float32)
          timesteps = np.zeros((DS,), dtype=np.float32)
@@ -405,6 +405,8 @@ def train(phase:int, token_ptr=0, recover=False, corrupt_perc=0.2):
             timesteps[i] = ts
          alphas_np = alphas
          alphas = Tensor(alphas).detach().reshape(1,1,DS,1).expand(BS,CS,DS,Config.model_params.den_dim).to(**TO) # type: ignore
+         if test_index > 0:
+            z = 0
 
          if test_index == 0 and corrupt_perc > 0:
             corrupt = torch.rand_like(alphas) # type: ignore
@@ -611,7 +613,7 @@ def generate_den(count=20, timestep_reduce=8, model:Optional[FusedTransformer]=N
       start_i = len(toks) - DS
       assert start_i > 0, f"input size {len(toks)} must be atleast 1 greater than decoder head size {DS}"
       x_0 = make_x_0(toks, start_i).to(**TO)
-      den_start_amount = timestep_reduce
+      den_start_amount = TD-1
       X, data_i = make_X(toks, start_i)
 
       for i in trange(count):
@@ -681,7 +683,7 @@ def deep_test_den(data, model:FusedTransformer, iterations:int=16, timestep_redu
 
          preds = []
          den_index = 0
-         den_start_amount = timestep_reduce
+         den_start_amount = TD-1
          while den_index < DS:
             overwrite = (DS-den_index-1)
             if overwrite > 0:

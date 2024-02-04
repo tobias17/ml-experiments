@@ -20,7 +20,7 @@ class ModelParams(Dictable):
 class Train:
    learning_rate = 2**-12
    batch_size = 1
-   rates_div  = 5
+   rates_div  = 2
    test_every = 400   //rates_div
    deep_every = 2000  //rates_div
    save_every = 20000 //rates_div
