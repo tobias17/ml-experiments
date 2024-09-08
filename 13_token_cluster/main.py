@@ -1,18 +1,16 @@
 from tinygrad import Tensor, nn
 from tinygrad.nn.state import get_parameters
 from tinygrad.helpers import prod
-from examples.llama import TikToken # type: ignore
 from extra.models.llama import TransformerBlock, precompute_freqs_cis # type: ignore
 
-from typing import Callable
 from sentencepiece import SentencePieceProcessor
 
-TOKEN_DIMS   = 768
+TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
-CLUSTER_DIMS = 2048
+CLUSTER_DIMS = 1024
 
 MAX_CLUSTER_CONTEXT = 32
-MAX_TOKEN_CONTEXT = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
+MAX_TOKEN_CONTEXT = int(MAX_CLUSTER_CONTEXT * CLUSTER_SIZE)
 
 NORM_EPS = 1e-5
 
@@ -23,7 +21,7 @@ class Encoder:
 
       self.tok_embeddings = nn.Embedding(vocab_size, token_dim)
       self.cluster_embed = nn.Linear(self.model_dim, self.model_dim)
-      self.layers = [TransformerBlock(self.model_dim, self.model_dim*ff_mult, self.model_dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
+      self.layers = [TransformerBlock(self.model_dim, int(self.model_dim*ff_mult), self.model_dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
       self.out_proj = nn.Linear(self.model_dim, cluster_dim)
       self.freqs_cis = precompute_freqs_cis(d_head, max_context*2, rope_theta).contiguous()
    
@@ -45,7 +43,7 @@ class Decoder:
       self.cluster_size = cluster_size
       
       self.in_proj = nn.Linear(cluster_dim, self.model_dim)
-      self.layers = [TransformerBlock(self.model_dim, self.model_dim*ff_mult, self.model_dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
+      self.layers = [TransformerBlock(self.model_dim, int(self.model_dim*ff_mult), self.model_dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
       self.freqs_cis = precompute_freqs_cis(d_head, max_context*2, rope_theta).contiguous()
       self.output = nn.Linear(token_dim, vocab_size, bias=False)
    
@@ -62,7 +60,7 @@ class Decoder:
 
 class Generator:
    def __init__(self, max_context:int, n_layers:int, dim:int, d_head:int, ff_mult:float=4.0, rope_theta:int=10000):
-      self.layers = [TransformerBlock(dim, dim*ff_mult, dim // d_head, None, NORM_EPS, max_context)]
+      self.layers = [TransformerBlock(dim, int(dim*ff_mult), dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
       self.freqs_cis = precompute_freqs_cis(d_head, max_context*2, rope_theta).contiguous()
    
    def __call__(self, x:Tensor) -> Tensor:
@@ -76,9 +74,9 @@ def main():
    D_HEAD = 32
 
    layers = {
-      "enc": 8,
-      "gen": 24,
-      "dec": 8,
+      "enc": 4,
+      "gen": 48,
+      "dec": 4,
    }
 
    enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD)
@@ -86,10 +84,11 @@ def main():
    dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD)
 
    counts = {}
+   MULT = 1.0 / 1024 / 1024 / 1024
    for name, model in { "enc":enc, "gen":gen, "dec":dec }.items():
       counts[name] = sum(prod(w.shape) for w in get_parameters(model))
-      print(f"{name}: {counts[name]}")
-   print(f"all: {sum(counts.values())}")
+      print(f"{name}: {counts[name] * MULT:.3f} B")
+   print(f"all: {sum(counts.values()) * MULT:.3f} B")
 
 if __name__ == "__main__":
    main()
