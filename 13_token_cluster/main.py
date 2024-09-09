@@ -4,6 +4,10 @@ from tinygrad.helpers import prod
 from extra.models.llama import TransformerBlock, precompute_freqs_cis # type: ignore
 
 from sentencepiece import SentencePieceProcessor # type: ignore
+import matplotlib.pyplot as plt
+import numpy as np
+from typing import List, Dict
+import datetime, os
 
 TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
@@ -98,9 +102,19 @@ def main():
    LEARNING_RATE = 2e-13
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
+   # Define some Globals
    GLOBAL_BS = 4
    TOKENS_CONTEXT_SIZE = (MAX_CLUSTER_CONTEXT + 1) * CLUSTER_SIZE
 
+   GRAPH_EVERY = 20
+
+   # Define some Tracking Variables
+   weights_folder = f"weights/{os.path.basename(os.path.dirname(__file__))}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
+   train_losses = { "a": [5.0] }
+   train_losses.pop("a")
+
+   step_i = 0
+   dataset_i = 0
    with Tensor.train():
       while True:
          orig_tokens = Tensor.randint(GLOBAL_BS, TOKENS_CONTEXT_SIZE, low=0, high=VOCAB_SIZE)
@@ -110,13 +124,34 @@ def main():
          dec_tokens   = dec(enc_clusters)
          prd_tokens   = dec(prd_clusters)
 
-         loss = (enc_clusters[1:] - prd_clusters).square().mean() \
-              + dec_tokens.sparse_categorical_crossentropy(orig_tokens) \
-              + prd_tokens.sparse_categorical_crossentropy(orig_tokens[1:])
+         losses = {
+            "cluster": (enc_clusters[1:] - prd_clusters).square().mean().realize(),
+            "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
+            "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[1:]).realize(),
+         }
+
+         loss = sum(losses.values()).realize()
          optim.zero_grad()
          loss.backward()
          optim.step()
 
+         for k,v in losses.items():
+            if k not in train_losses:
+               train_losses[k] = []
+            train_losses[k].append(v.numpy().item())
+
+         if step_i > 0 and step_i % GRAPH_EVERY == 0:
+            x = np.arange(len(losses.values()[0]))
+            for label, y in losses.items():
+               plt.plot(x, y, label=label)
+            plt.title("Loss")
+            plt.legend()
+            figure = plt.gcf()
+            figure.set_size_inches(18/1.5, 10/1.5)
+            plt.savefig(os.path.join(weights_folder, "graph_loss.png"), dpi=100)
+
+         step_i += 1
+         dataset_i += GLOBAL_BS
 
 if __name__ == "__main__":
    main()
