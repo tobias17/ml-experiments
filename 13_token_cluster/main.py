@@ -3,14 +3,13 @@ from tinygrad.nn.state import get_parameters
 from tinygrad.helpers import prod
 from extra.models.llama import TransformerBlock, precompute_freqs_cis # type: ignore
 
-from sentencepiece import SentencePieceProcessor
+from sentencepiece import SentencePieceProcessor # type: ignore
 
 TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
 CLUSTER_DIMS = 1024
 
 MAX_CLUSTER_CONTEXT = 32
-MAX_TOKEN_CONTEXT = int(MAX_CLUSTER_CONTEXT * CLUSTER_SIZE)
 
 NORM_EPS = 1e-5
 
@@ -70,25 +69,54 @@ class Generator:
       return x
 
 def main():
+   # Define Models
    VOCAB_SIZE = 32000
    D_HEAD = 32
-
    layers = {
-      "enc": 4,
-      "gen": 48,
-      "dec": 4,
+      "enc": 6,
+      "gen": 32,
+      "dec": 6,
    }
-
    enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD)
    gen = Generator(            MAX_CLUSTER_CONTEXT,   layers["gen"],             CLUSTER_DIMS,               D_HEAD)
    dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD)
 
+   # Compute and Print Parameter Counts
+   params = []
    counts = {}
    MULT = 1.0 / 1024 / 1024 / 1024
+   print("Model Parameters:")
    for name, model in { "enc":enc, "gen":gen, "dec":dec }.items():
-      counts[name] = sum(prod(w.shape) for w in get_parameters(model))
+      model_params = get_parameters(model)
+      counts[name] = sum(prod(w.shape) for w in model_params)
+      params += model_params
       print(f"{name}: {counts[name] * MULT:.3f} B")
    print(f"all: {sum(counts.values()) * MULT:.3f} B")
+   print("")
+
+   # Define the Optimizer
+   LEARNING_RATE = 2e-13
+   optim = nn.optim.AdamW(params, LEARNING_RATE)
+
+   GLOBAL_BS = 4
+   TOKENS_CONTEXT_SIZE = (MAX_CLUSTER_CONTEXT + 1) * CLUSTER_SIZE
+
+   with Tensor.train():
+      while True:
+         orig_tokens = Tensor.randint(GLOBAL_BS, TOKENS_CONTEXT_SIZE, low=0, high=VOCAB_SIZE)
+
+         enc_clusters = enc(orig_tokens)
+         prd_clusters = gen(enc_clusters[:, :-1])
+         dec_tokens   = dec(enc_clusters)
+         prd_tokens   = dec(prd_clusters)
+
+         loss = (enc_clusters[1:] - prd_clusters).square().mean() \
+              + dec_tokens.sparse_categorical_crossentropy(orig_tokens) \
+              + prd_tokens.sparse_categorical_crossentropy(orig_tokens[1:])
+         optim.zero_grad()
+         loss.backward()
+         optim.step()
+
 
 if __name__ == "__main__":
    main()
