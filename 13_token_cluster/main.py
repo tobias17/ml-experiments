@@ -100,13 +100,13 @@ def main():
    VOCAB_SIZE = 32000
    D_HEAD = 32
    layers = {
-      "enc": 4,
-      "gen": 24,
-      "dec": 4,
+      "enc": 6,
+      "gen": 32,
+      "dec": 6,
    }
-   enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD)
-   gen = Generator(            MAX_CLUSTER_CONTEXT,   layers["gen"],             CLUSTER_DIMS,               D_HEAD)
-   dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD)
+   enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
+   gen = Generator(            MAX_CLUSTER_CONTEXT,   layers["gen"],             CLUSTER_DIMS,               D_HEAD, ff_mult=3.0)
+   dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
 
    # Compute and Print Parameter Counts
    params = []
