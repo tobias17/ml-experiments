@@ -14,6 +14,7 @@ CLUSTER_SIZE = 8
 CLUSTER_DIMS = 1024
 
 MAX_CLUSTER_CONTEXT = 128
+# MAX_CLUSTER_CONTEXT = 16
 
 NORM_EPS = 1e-5
 
@@ -112,24 +113,18 @@ def main():
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
 
-
    GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6)]
-   ENC_GPU = GPUS[0 % len(GPUS)]
-   GEN_GPU = GPUS[0 % len(GPUS)]
-   DEC_GPU = GPUS[0 % len(GPUS)]
 
-
-   # Compute and Print Parameter Counts
    params = []
    counts = {}
    MULT = 1.0 / 1024 / 1024 / 1024
    print("\nModel Parameters:")
-   for name, (model,device) in { "enc":(enc,ENC_GPU), "gen":(gen,GEN_GPU), "dec":(dec,DEC_GPU) }.items():
+   for name, model in { "enc":enc, "gen":gen, "dec":dec }.items():
       model_params = get_parameters(model)
       for w in model_params:
-         w.replace(w.cast(dtypes.float16).to(device)).realize()
-      counts[name] = sum(prod(w.shape) for w in model_params)
+         w.replace(w.cast(dtypes.float32).shard(GPUS, axis=None)).realize()
       params += model_params
+      counts[name] = sum(prod(w.shape) for w in model_params)
       print(f"{name}: {counts[name] * MULT:.3f} B")
    print(f"all: {sum(counts.values()) * MULT:.3f} B")
    print("")
@@ -139,7 +134,8 @@ def main():
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
-   GLOBAL_BS = 4
+   DEVICE_BS = 1
+   GLOBAL_BS = DEVICE_BS * len(GPUS)
    TOKENS_CONTEXT_SIZE = (MAX_CLUSTER_CONTEXT + 1) * CLUSTER_SIZE
 
    GRAPH_EVERY = 20
@@ -152,24 +148,22 @@ def main():
 
    # @TinyJit
    def train_step(orig_tokens:Tensor) -> Tuple[Tensor,Dict[str,Tensor],Tensor]:
-      orig_enc, orig_dec = [orig_tokens.to(device) for device in [ENC_GPU, DEC_GPU]]
-
-      enc_clusters = enc(orig_enc).realize()
-      prd_clusters = gen(enc_clusters[:, :-1].to(GEN_GPU)).realize()
-      dec_tokens   = dec(enc_clusters.to(DEC_GPU)).realize()
-      prd_tokens   = dec(prd_clusters.to(DEC_GPU)).realize()
+      enc_clusters = enc(orig_tokens).realize()
+      prd_clusters = gen(enc_clusters[:, :-1]).realize()
+      dec_tokens   = dec(enc_clusters).realize()
+      prd_tokens   = dec(prd_clusters).realize()
 
       losses = {
-         "cluster": (enc_clusters[:, 1:] - prd_clusters.to(ENC_GPU)).square().mean().to(DEC_GPU).realize(),
-         "decoded": dec_tokens.sparse_categorical_crossentropy(orig_dec).realize(),
-         "predict": prd_tokens.sparse_categorical_crossentropy(orig_dec[:, CLUSTER_SIZE:]).realize(),
+         "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
+         "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
+         "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
       }
       loss = sum(losses.values()).realize()
       optim.zero_grad()
       loss.backward()
       optim.step()
 
-      acc = (prd_tokens.argmax(axis=-1) == orig_dec[:, CLUSTER_SIZE:]).mean().realize()
+      acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
 
       return loss, losses, acc
 
@@ -180,11 +174,12 @@ def main():
          start_time = time.time()
          Tensor.manual_seed(step_i)
 
-         orig_tokens = Tensor.stack(*[Tensor(np.asarray(X_train[dataset_i + batch_i*TOKENS_CONTEXT_SIZE :dataset_i + (batch_i+1)*TOKENS_CONTEXT_SIZE]), dtype=dtypes.int32) for batch_i in range(GLOBAL_BS)])
+         orig_batches = [Tensor(np.asarray(X_train[dataset_i + batch_i*TOKENS_CONTEXT_SIZE :dataset_i + (batch_i+1)*TOKENS_CONTEXT_SIZE]), dtype=dtypes.int32) for batch_i in range(GLOBAL_BS)]
+         orig_tokens = Tensor.stack(*orig_batches).shard(GPUS, axis=0)
          loss, losses, acc = train_step(orig_tokens.realize())
 
          delta_time = time.time() - start_time
-         print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {loss.numpy().item():.4f} Train Loss | {100.0*acc.numpy().item():.2f}% Train Acc |")
+         print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {loss.item():.4f} Train Loss | {100.0*acc.item():.2f}% Train Acc |")
 
          for k,v in losses.items():
             if k not in train_losses:
