@@ -1,6 +1,6 @@
 from tinygrad import Tensor, nn, Variable, dtypes, TinyJit, Device
 from tinygrad.nn.state import get_parameters
-from tinygrad.helpers import prod
+from tinygrad.helpers import prod, BEAM, Context
 from extra.models.llama import TransformerBlock, Attention, precompute_freqs_cis, apply_rotary_emb, repeat_kv # type: ignore
 
 from sentencepiece import SentencePieceProcessor # type: ignore
@@ -13,7 +13,7 @@ TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
 CLUSTER_DIMS = 1024
 
-MAX_CLUSTER_CONTEXT = 128
+MAX_CLUSTER_CONTEXT = 64
 # MAX_CLUSTER_CONTEXT = 16
 
 NORM_EPS = 1e-5
@@ -97,6 +97,12 @@ class Generator:
       return x
 
 def main():
+   BEAM_VALUE = BEAM.value
+   BEAM.value = 0
+
+   MULTI_GPU = False
+   TRAIN_DTYPE = dtypes.float32
+
    # Define Models
    VOCAB_SIZE = 32000
    D_HEAD = 32
@@ -114,15 +120,24 @@ def main():
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
 
    GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6)]
+   if not MULTI_GPU:
+      GPUS =  GPUS[:1]
 
    params = []
    counts = {}
    MULT = 1.0 / 1024 / 1024 / 1024
    print("\nModel Parameters:")
-   for name, model in { "enc":enc, "gen":gen, "dec":dec }.items():
+   for name, model in {
+      "enc":enc,
+      # "gen":gen,
+      "dec":dec
+   }.items():
       model_params = get_parameters(model)
       for w in model_params:
-         w.replace(w.cast(dtypes.float32).shard(GPUS, axis=None)).realize()
+         if MULTI_GPU:
+            w.replace(w.cast(TRAIN_DTYPE).shard(GPUS, axis=None)).realize()
+         else:
+            w.replace(w.cast(TRAIN_DTYPE)).realize()
       params += model_params
       counts[name] = sum(prod(w.shape) for w in model_params)
       print(f"{name}: {counts[name] * MULT:.3f} B")
@@ -134,7 +149,7 @@ def main():
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
-   DEVICE_BS = 1
+   DEVICE_BS = 32
    GLOBAL_BS = DEVICE_BS * len(GPUS)
    TOKENS_CONTEXT_SIZE = (MAX_CLUSTER_CONTEXT + 1) * CLUSTER_SIZE
 
@@ -149,21 +164,22 @@ def main():
    # @TinyJit
    def train_step(orig_tokens:Tensor) -> Tuple[Tensor,Dict[str,Tensor],Tensor]:
       enc_clusters = enc(orig_tokens).realize()
-      prd_clusters = gen(enc_clusters[:, :-1]).realize()
+      # prd_clusters = gen(enc_clusters[:, :-1]).realize()
       dec_tokens   = dec(enc_clusters).realize()
-      prd_tokens   = dec(prd_clusters).realize()
+      # prd_tokens   = dec(prd_clusters).realize()
 
       losses = {
-         "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
+         # "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
          "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
-         "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
+         # "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
       }
       loss = sum(losses.values()).realize()
       optim.zero_grad()
       loss.backward()
       optim.step()
 
-      acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
+      # acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
+      acc = (dec_tokens.argmax(axis=-1) == orig_tokens).mean().realize()
 
       return loss, losses, acc
 
@@ -174,12 +190,20 @@ def main():
          start_time = time.time()
          Tensor.manual_seed(step_i)
 
-         orig_batches = [Tensor(np.asarray(X_train[dataset_i + batch_i*TOKENS_CONTEXT_SIZE :dataset_i + (batch_i+1)*TOKENS_CONTEXT_SIZE]), dtype=dtypes.int32) for batch_i in range(GLOBAL_BS)]
-         orig_tokens = Tensor.stack(*orig_batches).shard(GPUS, axis=0)
-         loss, losses, acc = train_step(orig_tokens.realize())
+         with Context(BEAM=BEAM_VALUE):
+            orig_batches = [Tensor(np.asarray(X_train[dataset_i + batch_i*TOKENS_CONTEXT_SIZE :dataset_i + (batch_i+1)*TOKENS_CONTEXT_SIZE]), dtype=dtypes.int32) for batch_i in range(GLOBAL_BS)]
+            orig_tokens = Tensor.stack(*orig_batches)
+            if MULTI_GPU:
+               orig_tokens = orig_tokens.shard(GPUS, axis=0)
+            loss, losses, acc = train_step(orig_tokens.realize())
 
-         delta_time = time.time() - start_time
-         print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {loss.item():.4f} Train Loss | {100.0*acc.item():.2f}% Train Acc |")
+            delta_time = time.time() - start_time
+            # print("\n"*20 + "="*120 + "\n"*5)
+            # l = loss.realize().item()
+            # a = acc.realize().item()
+            l = loss.numpy().item()
+            a = acc.item()
+            print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {l:.4f} Train Loss | {100.0*a:.2f}% Train Acc |")
 
          for k,v in losses.items():
             if k not in train_losses:
