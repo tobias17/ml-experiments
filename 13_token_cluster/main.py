@@ -145,7 +145,7 @@ def main():
    print("")
 
    # Define the Optimizer
-   LEARNING_RATE = 2e-15
+   LEARNING_RATE = 2e-18
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
@@ -153,7 +153,7 @@ def main():
    GLOBAL_BS = DEVICE_BS * len(GPUS)
    TOKENS_CONTEXT_SIZE = (MAX_CLUSTER_CONTEXT + 1) * CLUSTER_SIZE
 
-   GRAPH_EVERY = 20
+   GRAPH_EVERY = 100
 
 
    # Define some Tracking Variables
@@ -161,7 +161,7 @@ def main():
    train_losses = { "a": [5.0] }
    train_losses.pop("a")
 
-   # @TinyJit
+   @TinyJit
    def train_step(orig_tokens:Tensor) -> Tuple[Tensor,Dict[str,Tensor],Tensor]:
       enc_clusters = enc(orig_tokens).realize()
       # prd_clusters = gen(enc_clusters[:, :-1]).realize()
