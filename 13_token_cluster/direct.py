@@ -8,11 +8,11 @@ import datetime, os, time
 import matplotlib.pyplot as plt
 import numpy as np
 
-TOKEN_DIMS   = 256
-CLUSTER_SIZE = 8
-CLUSTER_DIMS = 1024
+TOKEN_DIMS   = 512
+CLUSTER_SIZE = 4
+CLUSTER_DIMS = 2048
 
-MAX_CLUSTER_CONTEXT = 64
+MAX_CLUSTER_CONTEXT = 32
 
 NORM_EPS = 1e-5
 
@@ -42,45 +42,49 @@ class Encoder:
       self.cluster_size = cluster_size
 
       self.tok_embeddings = nn.Embedding(vocab_size, token_dim)
-      self.cluster_embed = nn.Linear(self.model_dim, self.model_dim)
-      self.layers = [TransformerBlock(self.model_dim, int(self.model_dim*ff_mult), self.model_dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
-      self.out_proj = nn.Linear(self.model_dim, cluster_dim)
-      self.freqs_cis = precompute_freqs_cis(d_head, max_context*2, rope_theta).contiguous()
-   
+      # self.cluster_embed = nn.Linear(self.model_dim, self.model_dim)
+      # self.layers = [nn.Linear(self.model_dim, self.model_dim) for _ in range(n_layers)]
+      # self.out_proj = nn.Linear(self.model_dim, cluster_dim)
+
    def __call__(self, tokens:Tensor) -> Tensor:
       h = self.tok_embeddings(tokens)
 
-      B, T, _ = h.shape
-      assert T % self.cluster_size == 0
-      C = T // self.cluster_size
-      x = self.cluster_embed(h.reshape(B, C, self.model_dim))
+      # B, T, _ = h.shape
+      # assert T % self.cluster_size == 0
+      # C = T // self.cluster_size
+      # x = self.cluster_embed(h.reshape(B, C, self.model_dim))
 
-      freqs_cis = self.freqs_cis.shrink((None,(0,C),None,None,None))
-      mask = Tensor.full((1, 1, C, C), float("-inf"), dtype=x.dtype, device=x.device).triu(1).realize()
-      for layer in self.layers: x = layer(x, 0, freqs_cis, mask)
-      return self.out_proj(x)
+      # for layer in self.layers: x = layer(x).silu()
+
+      # return self.out_proj(x)
+
+      return h
 
 class Decoder:
    def __init__(self, vocab_size:int, max_context:int, n_layers:int, token_dim:int, cluster_dim:int, cluster_size:int, d_head:int, ff_mult:float=4.0, rope_theta:int=10000):
       self.model_dim = token_dim * cluster_size
       self.cluster_size = cluster_size
-      
-      self.in_proj = nn.Linear(cluster_dim, self.model_dim)
-      self.layers = [TransformerBlock(self.model_dim, int(self.model_dim*ff_mult), self.model_dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
-      self.freqs_cis = precompute_freqs_cis(d_head, max_context*2, rope_theta).contiguous()
-      self.output = nn.Linear(token_dim, vocab_size, bias=False)
-   
-   def __call__(self, c:Tensor) -> Tensor:
-      x = self.in_proj(c)
-      B, C, _ = x.shape
-      T = C * self.cluster_size
 
-      freqs_cis = self.freqs_cis.shrink((None,(0,C),None,None,None))
-      mask = Tensor.full((1, 1, C, C), float("-inf"), dtype=x.dtype, device=x.device).triu(1).realize()
-      for layer in self.layers: x = layer(x, 0, freqs_cis, mask)
+      # self.in_proj = nn.Linear(cluster_dim, self.model_dim)
+      # self.layers = [nn.Linear(self.model_dim, self.model_dim) for _ in range(n_layers)]
+      self.output = nn.Linear(token_dim, vocab_size, bias=False)
+
+   def __call__(self, c:Tensor) -> Tensor:
+      # x = self.in_proj(c)
+      # B, C, _ = x.shape
+      # T = C * self.cluster_size
+
+      # for layer in self.layers: x = layer(x).silu()
+
+      # h = x.reshape(B, T, self.model_dim // self.cluster_size)
+      # logits = self.output(h)
+      # return logits
    
-      logits = self.output(x.reshape(B, T, self.model_dim // self.cluster_size))
+
+      logits = self.output(c)
       return logits
+
+
 
 def main():
    BEAM_VALUE = BEAM.value
@@ -93,11 +97,11 @@ def main():
    VOCAB_SIZE = 32000
    D_HEAD = 32
    layers = {
-      "enc": 6,
-      "dec": 6,
+      "enc": 8,
+      "dec": 8,
    }
-   enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
-   dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
+   enc = Encoder(VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
+   dec = Decoder(VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
 
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
@@ -127,8 +131,8 @@ def main():
    print("")
 
    # Define the Optimizer
-   LEARNING_RATE = 2e-18
-   optim = nn.optim.AdamW(params, LEARNING_RATE)
+   LEARNING_RATE = 2e-10
+   optim = nn.optim.Adam(params, LEARNING_RATE)
 
    # Define some Globals
    DEVICE_BS = 32
@@ -143,7 +147,7 @@ def main():
    train_losses = { "a": [5.0] }
    train_losses.pop("a")
 
-   @TinyJit
+   # @TinyJit
    def train_step(orig_tokens:Tensor) -> Tuple[Tensor,Dict[str,Tensor],Tensor]:
       enc_clusters = enc(orig_tokens).realize()
       # prd_clusters = gen(enc_clusters[:, :-1]).realize()
@@ -153,7 +157,7 @@ def main():
       losses = {
          "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
       }
-      loss = sum(losses.values()).realize()
+      loss = losses["decoded"].realize() # sum(losses.values()).realize()
       optim.zero_grad()
       loss.backward()
       optim.step()
