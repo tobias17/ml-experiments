@@ -3,7 +3,6 @@ from tinygrad.nn.state import get_parameters
 from tinygrad.helpers import prod, BEAM, Context
 from extra.models.llama import TransformerBlock, Attention, precompute_freqs_cis, apply_rotary_emb, repeat_kv # type: ignore
 
-from sentencepiece import SentencePieceProcessor # type: ignore
 from typing import List, Dict, Union, Optional, Tuple
 import datetime, os, time
 import matplotlib.pyplot as plt
@@ -14,7 +13,6 @@ CLUSTER_SIZE = 8
 CLUSTER_DIMS = 1024
 
 MAX_CLUSTER_CONTEXT = 64
-# MAX_CLUSTER_CONTEXT = 16
 
 NORM_EPS = 1e-5
 
@@ -84,18 +82,6 @@ class Decoder:
       logits = self.output(x.reshape(B, T, self.model_dim // self.cluster_size))
       return logits
 
-class Generator:
-   def __init__(self, max_context:int, n_layers:int, dim:int, d_head:int, ff_mult:float=4.0, rope_theta:int=10000):
-      self.layers = [TransformerBlock(dim, int(dim*ff_mult), dim // d_head, None, NORM_EPS, max_context) for _ in range(n_layers)]
-      self.freqs_cis = precompute_freqs_cis(d_head, max_context*2, rope_theta).contiguous()
-   
-   def __call__(self, x:Tensor) -> Tensor:
-      C = x.shape[1]
-      freqs_cis = self.freqs_cis.shrink((None,(0,C),None,None,None))
-      mask = Tensor.full((1, 1, C, C), float("-inf"), dtype=x.dtype, device=x.device).triu(1).realize()
-      for layer in self.layers: x = layer(x, 0, freqs_cis, mask)
-      return x
-
 def main():
    BEAM_VALUE = BEAM.value
    BEAM.value = 0
@@ -108,13 +94,10 @@ def main():
    D_HEAD = 32
    layers = {
       "enc": 6,
-      "gen": 32,
       "dec": 6,
    }
    enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
-   gen = Generator(            MAX_CLUSTER_CONTEXT,   layers["gen"],             CLUSTER_DIMS,               D_HEAD, ff_mult=3.0)
    dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
-   tok = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
 
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
@@ -129,7 +112,6 @@ def main():
    print("\nModel Parameters:")
    for name, model in {
       "enc":enc,
-      # "gen":gen,
       "dec":dec
    }.items():
       model_params = get_parameters(model)
@@ -169,16 +151,13 @@ def main():
       # prd_tokens   = dec(prd_clusters).realize()
 
       losses = {
-         # "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
          "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
-         # "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
       }
       loss = sum(losses.values()).realize()
       optim.zero_grad()
       loss.backward()
       optim.step()
 
-      # acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
       acc = (dec_tokens.argmax(axis=-1) == orig_tokens).mean().realize()
 
       return loss, losses, acc
@@ -198,12 +177,7 @@ def main():
             loss, losses, acc = train_step(orig_tokens.realize())
 
             delta_time = time.time() - start_time
-            # print("\n"*20 + "="*120 + "\n"*5)
-            # l = loss.realize().item()
-            # a = acc.realize().item()
-            l = loss.numpy().item()
-            a = acc.item()
-            print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {l:.4f} Train Loss | {100.0*a:.2f}% Train Acc |")
+            print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {loss.item():.4f} Train Loss | {100.0*acc.item():.2f}% Train Acc |")
 
          for k,v in losses.items():
             if k not in train_losses:
