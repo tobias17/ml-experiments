@@ -13,8 +13,7 @@ TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
 CLUSTER_DIMS = 1024
 
-MAX_CLUSTER_CONTEXT = 64
-# MAX_CLUSTER_CONTEXT = 16
+MAX_CLUSTER_CONTEXT = 32
 
 NORM_EPS = 1e-5
 
@@ -96,12 +95,15 @@ class Generator:
       for layer in self.layers: x = layer(x, 0, freqs_cis, mask)
       return x
 
+
+
 def main():
+   Tensor.manual_seed(42)
+   Tensor.training = True
    BEAM_VALUE = BEAM.value
    BEAM.value = 0
 
-   MULTI_GPU = False
-   TRAIN_DTYPE = dtypes.float32
+   MULTI_GPU = True
 
    # Define Models
    VOCAB_SIZE = 32000
@@ -119,25 +121,21 @@ def main():
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
 
-   GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6)]
-   if not MULTI_GPU:
-      GPUS =  GPUS[:1]
+   GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6 if MULTI_GPU else 1)]
 
    params = []
    counts = {}
    MULT = 1.0 / 1024 / 1024 / 1024
    print("\nModel Parameters:")
    for name, model in {
-      "enc":enc,
-      # "gen":gen,
-      "dec":dec
+      "enc": enc,
+      "gen": gen,
+      "dec": dec,
    }.items():
       model_params = get_parameters(model)
-      for w in model_params:
-         if MULTI_GPU:
-            w.replace(w.cast(TRAIN_DTYPE).shard(GPUS, axis=None)).realize()
-         else:
-            w.replace(w.cast(TRAIN_DTYPE)).realize()
+      if MULTI_GPU:
+         for w in model_params:
+            w.replace(w.shard(GPUS, axis=None)).realize()
       params += model_params
       counts[name] = sum(prod(w.shape) for w in model_params)
       print(f"{name}: {counts[name] * MULT:.3f} B")
@@ -149,7 +147,7 @@ def main():
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
-   DEVICE_BS = 32
+   DEVICE_BS = 4
    GLOBAL_BS = DEVICE_BS * len(GPUS)
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
@@ -164,22 +162,21 @@ def main():
    @TinyJit
    def train_step(orig_tokens:Tensor) -> Tuple[Tensor,Dict[str,Tensor],Tensor]:
       enc_clusters = enc(orig_tokens).realize()
-      # prd_clusters = gen(enc_clusters[:, :-1]).realize()
+      prd_clusters = gen(enc_clusters[:, :-1]).realize()
       dec_tokens   = dec(enc_clusters).realize()
-      # prd_tokens   = dec(prd_clusters).realize()
+      prd_tokens   = dec(prd_clusters).realize()
 
       losses = {
-         # "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
+         "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
          "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
-         # "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
+         "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
       }
       loss = sum(losses.values()).realize()
       optim.zero_grad()
       loss.backward()
       optim.step()
 
-      # acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
-      acc = (dec_tokens.argmax(axis=-1) == orig_tokens).mean().realize()
+      acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
 
       return loss, losses, acc
 
