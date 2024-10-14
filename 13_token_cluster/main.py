@@ -103,7 +103,7 @@ def main():
    BEAM_VALUE = BEAM.value
    BEAM.value = 0
 
-   MULTI_GPU = True
+   MULTI_GPU = False
 
    # Define Models
    VOCAB_SIZE = 32000
@@ -123,15 +123,17 @@ def main():
 
    GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6 if MULTI_GPU else 1)]
 
+   name_model_dict = {
+      "enc": enc,
+      "gen": gen,
+      "dec": dec,
+   }
+
    params = []
    counts = {}
    MULT = 1.0 / 1024 / 1024 / 1024
    print("\nModel Parameters:")
-   for name, model in {
-      "enc": enc,
-      "gen": gen,
-      "dec": dec,
-   }.items():
+   for name, model in name_model_dict.items():
       model_params = get_parameters(model)
       if MULTI_GPU:
          for w in model_params:
@@ -147,12 +149,12 @@ def main():
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
-   DEVICE_BS = 4
+   DEVICE_BS = 16
    GLOBAL_BS = DEVICE_BS * len(GPUS)
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
-   GRAPH_EVERY = 100
-
+   GRAPH_EVERY = 200
+   SAVE_EVERY  = 10000
 
    # Define some Tracking Variables
    weights_folder = f"weights/{os.path.basename(os.path.dirname(__file__))}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
@@ -215,6 +217,11 @@ def main():
             figure.set_size_inches(18/1.5, 10/1.5)
             if not os.path.exists(weights_folder): os.makedirs(weights_folder)
             plt.savefig(os.path.join(weights_folder, "graph_loss.png"), dpi=100)
+         
+         if step_i > 0 and step_i % SAVE_EVERY == 0:
+            if not os.path.exists(weights_folder): os.makedirs(weights_folder)
+            for name, model in name_model_dict.items():
+               nn.state.safe_save(nn.state.get_state_dict(model), os.path.join(weights_folder, f"{step_i//1000:04d}k_{name}.st"))
 
          print(f"| {step_i-1:05d} | {1000.0*(time.time()-start_time):.0f} ms | {loss_v:.4f} Train Loss | {100.0*acc_v:.2f}% Train Acc |")
 
