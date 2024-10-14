@@ -1,6 +1,6 @@
-from tinygrad import Tensor, nn, Variable, dtypes, TinyJit, Device
-from tinygrad.nn.state import get_parameters
-from tinygrad.helpers import prod, BEAM, Context
+from tinygrad import Tensor, nn, Variable, dtypes, TinyJit, Device # type: ignore
+from tinygrad.nn.state import get_parameters # type: ignore
+from tinygrad.helpers import prod, BEAM, Context # type: ignore
 from extra.models.llama import TransformerBlock, Attention, precompute_freqs_cis, apply_rotary_emb, repeat_kv # type: ignore
 
 from sentencepiece import SentencePieceProcessor # type: ignore
@@ -111,9 +111,9 @@ def main():
       "gen": 32,
       "dec": 6,
    }
-   enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
-   gen = Generator(            MAX_CLUSTER_CONTEXT,   layers["gen"],             CLUSTER_DIMS,               D_HEAD, ff_mult=3.0)
-   dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT+1, layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
+   enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT,   layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
+   gen = Generator(            MAX_CLUSTER_CONTEXT-1, layers["gen"],             CLUSTER_DIMS,               D_HEAD, ff_mult=3.0)
+   dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT,   layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
    tok = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
 
    # Load Dataset
@@ -145,13 +145,13 @@ def main():
    print("")
 
    # Define the Optimizer
-   LEARNING_RATE = 2e-18
+   LEARNING_RATE = 2e-8
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
    DEVICE_BS = 32
    GLOBAL_BS = DEVICE_BS * len(GPUS)
-   TOKENS_CONTEXT_SIZE = (MAX_CLUSTER_CONTEXT + 1) * CLUSTER_SIZE
+   TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
    GRAPH_EVERY = 100
 
@@ -196,19 +196,12 @@ def main():
             if MULTI_GPU:
                orig_tokens = orig_tokens.shard(GPUS, axis=0)
             loss, losses, acc = train_step(orig_tokens.realize())
-
-            delta_time = time.time() - start_time
-            # print("\n"*20 + "="*120 + "\n"*5)
-            # l = loss.realize().item()
-            # a = acc.realize().item()
-            l = loss.numpy().item()
-            a = acc.item()
-            print(f"| {step_i:05d} | {1000.0*delta_time:.0f} ms | {l:.4f} Train Loss | {100.0*a:.2f}% Train Acc |")
+            loss_v, acc_v = loss.item(), acc.item()
 
          for k,v in losses.items():
             if k not in train_losses:
                train_losses[k] = []
-            train_losses[k].append(v.numpy().item())
+            train_losses[k].append(v.item())
 
          step_i += 1
          dataset_i += TOKENS_CONTEXT_SIZE * GLOBAL_BS
@@ -225,6 +218,8 @@ def main():
             figure.set_size_inches(18/1.5, 10/1.5)
             if not os.path.exists(weights_folder): os.makedirs(weights_folder)
             plt.savefig(os.path.join(weights_folder, "graph_loss.png"), dpi=100)
+
+         print(f"| {step_i-1:05d} | {1000.0*(time.time()-start_time):.0f} ms | {loss_v:.4f} Train Loss | {100.0*acc_v:.2f}% Train Acc |")
 
 if __name__ == "__main__":
    main()

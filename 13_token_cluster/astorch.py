@@ -1,5 +1,6 @@
 from torch import Tensor, nn, Module
 from torch import optim as nn_optim
+from tinygrad.helpers import prod # type: ignore
 import time
 import numpy as np
 
