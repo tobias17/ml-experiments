@@ -92,7 +92,6 @@ def main():
    D_HEAD = 32
    layers = {
       "enc": 6,
-      "gen": 32,
       "dec": 6,
    }
    enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT, layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
@@ -108,9 +107,8 @@ def main():
    MULT = 1.0 / 1024 / 1024 / 1024
    print("\nModel Parameters:")
    for name, model in {
-      "enc":enc,
-      # "gen":gen,
-      "dec":dec
+      "enc": enc,
+      "dec": dec,
    }.items():
       model_params = get_parameters(model)
       params += model_params
@@ -120,7 +118,7 @@ def main():
    print("")
 
    # Define the Optimizer
-   LEARNING_RATE = 2e-8
+   LEARNING_RATE = 2e-6
    optim = nn.optim.AdamW(params, LEARNING_RATE)
 
    # Define some Globals
