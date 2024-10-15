@@ -6,8 +6,8 @@ from extra.models.llama import TransformerBlock, Attention, precompute_freqs_cis
 from sentencepiece import SentencePieceProcessor # type: ignore
 from typing import List, Dict, Union, Optional, Tuple
 import datetime, os, time
-import matplotlib.pyplot as plt
-import numpy as np
+import matplotlib.pyplot as plt # type: ignore
+import numpy as np # type: ignore
 
 TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
@@ -221,7 +221,7 @@ def main():
                loss_vs.append(loss.item())
                acc_vs.append(acc.item())
                for k,v in losses.items():
-                  if k not in train_losses:
+                  if k not in train_losses[i]:
                      train_losses[i][k] = []
                   train_losses[i][k].append(v.item())
 
@@ -232,7 +232,7 @@ def main():
             for i in range(MODEL_CONFIGS):
                plt.clf()
                x = np.arange(step_i)
-               for label, y in train_losses.items():
+               for label, y in train_losses[i].items():
                   plt.plot(x, y, label=label)
                plt.ylim((0,None))
                plt.title("Loss")
