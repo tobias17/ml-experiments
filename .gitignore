@@ -2,3 +2,4 @@
 *.vscode
 weights/
 archive/
+__pycache__
