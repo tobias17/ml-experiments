@@ -172,10 +172,10 @@ def main():
 
    # Define the Optimizer
    LEARNING_RATES = [
-      2e-5,
+      2e-6,
+      2e-7,
       2e-8,
-      2e-11,
-      2e-16,
+      2e-9,
    ]
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
