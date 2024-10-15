@@ -95,6 +95,26 @@ class Generator:
       for layer in self.layers: x = layer(x, 0, freqs_cis, mask)
       return x
 
+class CombinedModel:
+   def __init__(self, vocab_size:int, max_context:int, n_layers:Dict[str,int], token_dim:int, cluster_dim:int, cluster_size:int, d_head:int, ff_mults:Dict[str,float]):
+      self.enc = Encoder  (vocab_size, max_context,   n_layers["enc"], token_dim, cluster_dim, cluster_size, d_head, ff_mult=2.0)
+      self.gen = Generator(            max_context-1, n_layers["gen"],            cluster_dim,               d_head, ff_mult=3.0)
+      self.dec = Decoder  (vocab_size, max_context,   n_layers["dec"], token_dim, cluster_dim, cluster_size, d_head, ff_mult=2.0)
+
+   def training_loss(self, orig_tokens:Tensor) -> Tuple[Dict[str,Tensor],Tensor]:
+      enc_clusters = self.enc(orig_tokens).realize()
+      prd_clusters = self.gen(enc_clusters[:, :-1]).realize()
+      dec_tokens   = self.dec(enc_clusters).realize()
+      prd_tokens   = self.dec(prd_clusters).realize()
+
+      losses = {
+         "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
+         "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
+         "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
+      }
+      acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
+
+      return losses, acc
 
 
 def main():
@@ -103,7 +123,7 @@ def main():
    BEAM_VALUE = BEAM.value
    BEAM.value = 0
 
-   MULTI_GPU = False
+   MODEL_CONFIGS = 4
 
    # Define Models
    VOCAB_SIZE = 32000
@@ -113,44 +133,55 @@ def main():
       "gen": 32,
       "dec": 6,
    }
-   enc = Encoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT,   layers["enc"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
-   gen = Generator(            MAX_CLUSTER_CONTEXT-1, layers["gen"],             CLUSTER_DIMS,               D_HEAD, ff_mult=3.0)
-   dec = Decoder  (VOCAB_SIZE, MAX_CLUSTER_CONTEXT,   layers["dec"], TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mult=2.0)
-   tok = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
+   ff_mults = {
+      "enc": 2.0,
+      "gen": 3.0,
+      "dec": 2.0,
+   }
+   models = [CombinedModel(VOCAB_SIZE, MAX_CLUSTER_CONTEXT, layers, TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mults) for _ in range(MODEL_CONFIGS)]
+   # tok = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
 
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
 
-   GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6 if MULTI_GPU else 1)]
+   GPUS = [f"{Device.DEFAULT}:{i}" for i in range(MODEL_CONFIGS)]
 
-   name_model_dict = {
-      "enc": enc,
-      "gen": gen,
-      "dec": dec,
-   }
+   item_names = [
+      "enc",
+      "gen",
+      "dec",
+   ]
 
-   params = []
-   counts = {}
    MULT = 1.0 / 1024 / 1024 / 1024
-   print("\nModel Parameters:")
-   for name, model in name_model_dict.items():
-      model_params = get_parameters(model)
-      if MULTI_GPU:
-         for w in model_params:
-            w.replace(w.shard(GPUS, axis=None)).realize()
-      params += model_params
-      counts[name] = sum(prod(w.shape) for w in model_params)
-      print(f"{name}: {counts[name] * MULT:.3f} B")
-   print(f"all: {sum(counts.values()) * MULT:.3f} B")
+   params = []
+   print("\nModel Parameters (B):")
+   for i in range(MODEL_CONFIGS):
+      model_params = get_parameters(models[i])
+      for w in model_params:
+         w.replace(w.to(GPUS[i])).realize()
+      params.append(model_params)
+
+      text = f"{i}: "
+      total = 0
+      for name in item_names:
+         item_param_count = sum(prod(p.shape) for p in get_parameters(getattr(models[i], name))) * MULT
+         text += f"{name}={item_param_count:.3f}, "
+         total += item_param_count
+      print(f"{text}total={total:.3f}")
    print("")
 
    # Define the Optimizer
-   LEARNING_RATE = 2e-8
-   optim = nn.optim.AdamW(params, LEARNING_RATE)
+   LEARNING_RATES = [
+      2e-5,
+      2e-8,
+      2e-11,
+      2e-16,
+   ]
+   optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
    DEVICE_BS = 16
-   GLOBAL_BS = DEVICE_BS * len(GPUS)
+   GLOBAL_BS = DEVICE_BS
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
    GRAPH_EVERY = 200
@@ -158,29 +189,20 @@ def main():
 
    # Define some Tracking Variables
    weights_folder = f"weights/{os.path.basename(os.path.dirname(__file__))}/{datetime.datetime.now()}".replace(" ", "_").replace(":", "_").replace("-", "_").replace(".", "_")
-   train_losses = { "a": [5.0] }
-   train_losses.pop("a")
+   train_losses = [dict() for _ in range(MODEL_CONFIGS)]
 
    @TinyJit
-   def train_step(orig_tokens:Tensor) -> Tuple[Tensor,Dict[str,Tensor],Tensor]:
-      enc_clusters = enc(orig_tokens).realize()
-      prd_clusters = gen(enc_clusters[:, :-1]).realize()
-      dec_tokens   = dec(enc_clusters).realize()
-      prd_tokens   = dec(prd_clusters).realize()
+   def train_step(orig_tokens:Tensor) -> List[Tuple[Tensor,Dict[str,Tensor],Tensor]]:
+      ret_val = []
+      for i in range(MODEL_CONFIGS):
+         losses, acc = models[i].training_loss(orig_tokens.to(GPUS[i]))
+         loss = sum(losses.values()).realize()
+         optims[i].zero_grad()
+         loss.backward()
+         optims[i].step()
 
-      losses = {
-         "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
-         "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
-         "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
-      }
-      loss = sum(losses.values()).realize()
-      optim.zero_grad()
-      loss.backward()
-      optim.step()
-
-      acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
-
-      return loss, losses, acc
+         ret_val.append((loss, losses, acc))
+      return ret_val
 
    step_i = 0
    dataset_i = 0
@@ -189,41 +211,43 @@ def main():
          start_time = time.time()
          Tensor.manual_seed(step_i)
 
+         loss_vs, acc_vs = [], []
          with Context(BEAM=BEAM_VALUE):
             orig_batches = [Tensor(np.asarray(X_train[dataset_i + batch_i*TOKENS_CONTEXT_SIZE :dataset_i + (batch_i+1)*TOKENS_CONTEXT_SIZE]), dtype=dtypes.int32) for batch_i in range(GLOBAL_BS)]
             orig_tokens = Tensor.stack(*orig_batches)
-            if MULTI_GPU:
-               orig_tokens = orig_tokens.shard(GPUS, axis=0)
-            loss, losses, acc = train_step(orig_tokens.realize())
-            loss_v, acc_v = loss.item(), acc.item()
+            ret_vals = train_step(orig_tokens.realize())
 
-         for k,v in losses.items():
-            if k not in train_losses:
-               train_losses[k] = []
-            train_losses[k].append(v.item())
+            for i, (loss, losses, acc) in enumerate(ret_vals):
+               loss_vs.append(loss.item())
+               acc_vs.append(acc.item())
+               for k,v in losses.items():
+                  if k not in train_losses:
+                     train_losses[i][k] = []
+                  train_losses[i][k].append(v.item())
 
          step_i += 1
          dataset_i += TOKENS_CONTEXT_SIZE * GLOBAL_BS
 
          if step_i > 0 and step_i % GRAPH_EVERY == 0:
-            plt.clf()
-            x = np.arange(step_i)
-            for label, y in train_losses.items():
-               plt.plot(x, y, label=label)
-            plt.ylim((0,None))
-            plt.title("Loss")
-            plt.legend()
-            figure = plt.gcf()
-            figure.set_size_inches(18/1.5, 10/1.5)
-            if not os.path.exists(weights_folder): os.makedirs(weights_folder)
-            plt.savefig(os.path.join(weights_folder, "graph_loss.png"), dpi=100)
+            for i in range(MODEL_CONFIGS):
+               plt.clf()
+               x = np.arange(step_i)
+               for label, y in train_losses.items():
+                  plt.plot(x, y, label=label)
+               plt.ylim((0,None))
+               plt.title("Loss")
+               plt.legend()
+               figure = plt.gcf()
+               figure.set_size_inches(18/1.5, 10/1.5)
+               if not os.path.exists(weights_folder): os.makedirs(weights_folder)
+               plt.savefig(os.path.join(weights_folder, f"graph_loss_c{i}.png"), dpi=100)
          
          if step_i > 0 and step_i % SAVE_EVERY == 0:
             if not os.path.exists(weights_folder): os.makedirs(weights_folder)
-            for name, model in name_model_dict.items():
-               nn.state.safe_save(nn.state.get_state_dict(model), os.path.join(weights_folder, f"{step_i//1000:04d}k_{name}.st"))
+            for i in range(MODEL_CONFIGS):
+               nn.state.safe_save(nn.state.get_state_dict(models[i]), os.path.join(weights_folder, f"model_{step_i//1000:04d}k_c{i}.st"))
 
-         print(f"| {step_i-1:05d} | {1000.0*(time.time()-start_time):.0f} ms | {loss_v:.4f} Train Loss | {100.0*acc_v:.2f}% Train Acc |")
+         print(f"| {step_i-1:05d} | {1000.0*(time.time()-start_time):.0f} ms | Train Loss " + " - ".join(f"{l:.4f}" for l in loss_vs) + f" | Train Acc " + " - ".join(f"{100.0*a:.2f}%" for a in acc_vs) + " |")
 
 if __name__ == "__main__":
    main()
