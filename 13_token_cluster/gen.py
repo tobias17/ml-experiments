@@ -1,7 +1,4 @@
-from tinygrad import Tensor # type: ignore
 from tinygrad.nn.state import load_state_dict, safe_load # type: ignore
-
-from sentencepiece import SentencePieceProcessor # type: ignore
 import os, sys
 
 def load_model(index:int, root_dir:str, folder_name:str, weight_name:str, config_pat:str):
@@ -50,7 +47,7 @@ if __name__ == "__main__":
    parser.add_argument('-f', '--folder-name', type=str, default='latest')
    parser.add_argument('-w', '--weight-name', type=str, default='latest')
    parser.add_argument('-c', '--config-pat',  type=str, default='_c{0}.st')
-   parser.add_argument('-g', '--gen-amount',  type=int, default=4)
+   parser.add_argument('-g', '--gen-amount',  type=int, default=32)
    args = parser.parse_args()
 
    model = load_model(args.index, args.root_dir, args.folder_name, args.weight_name, args.config_pat)
