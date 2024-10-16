@@ -91,9 +91,13 @@ class Generator:
 
 class CombinedModel:
    def __init__(self, vocab_size:int, max_context:int, n_layers:Dict[str,int], token_dim:int, cluster_dim:int, cluster_size:int, d_head:int, ff_mults:Dict[str,float]):
-      self.enc = Encoder  (vocab_size, max_context,   n_layers["enc"], token_dim, cluster_dim, cluster_size, d_head, ff_mult=2.0)
-      self.gen = Generator(            max_context-1, n_layers["gen"],            cluster_dim,               d_head, ff_mult=3.0)
-      self.dec = Decoder  (vocab_size, max_context,   n_layers["dec"], token_dim, cluster_dim, cluster_size, d_head, ff_mult=2.0)
+      self.enc = Encoder  (vocab_size, max_context,   n_layers["enc"], token_dim, cluster_dim, cluster_size, d_head, ff_mults["enc"])
+      self.gen = Generator(            max_context-1, n_layers["gen"],            cluster_dim,               d_head, ff_mults["gen"])
+      self.dec = Decoder  (vocab_size, max_context,   n_layers["dec"], token_dim, cluster_dim, cluster_size, d_head, ff_mults["dec"])
+
+      self.vocab_size = vocab_size
+      self.max_context = max_context
+      self.cluster_size = cluster_size
 
    def training_loss(self, orig_tokens:Tensor) -> Tuple[Dict[str,Tensor],Tensor]:
       enc_clusters = self.enc(orig_tokens).realize()
