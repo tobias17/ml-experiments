@@ -2,7 +2,6 @@ from tinygrad import Tensor # type: ignore
 from tinygrad.nn.state import load_state_dict, safe_load # type: ignore
 
 from sentencepiece import SentencePieceProcessor # type: ignore
-from tqdm import trange
 import os, sys
 
 def load_model(index:int, root_dir:str, folder_name:str, weight_name:str, config_pat:str):
@@ -43,26 +42,6 @@ Bate, I beseech you, widow Dido.
 ANTONIO:
 """
 
-def gen_tokens(model, gen_amount:int):
-   tokenizer = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
-   tokens = tokenizer.Encode(text_init)
-
-   spare = len(tokens) % model.cluster_size
-   if spare > 0:
-      tokens = tokens[:-spare]
-   assert len(tokens) > 0, f"got no remaining tokens after cutting off {spare} spare"
-   assert len(tokens) % model.cluster_size == 0, "FATAL: invalid computation"
-   print(f"\nINITAL TEXT\n\n{tokenizer.Decode(tokens)}\n")
-
-   x = Tensor(tokens).unsqueeze(0)
-   z = model.enc(x)
-   for _ in trange(gen_amount):
-      z_h = model.gen(z)
-      z = z.cat(z_h[:, -1:, :], dim=1).realize()
-   tokens = model.dec(z).argmax(-1).numpy().tolist()
-   
-   print(f"\nGENERATED TEXT\n\n{tokenizer.Decode(tokens)[0]}\n")
-
 if __name__ == "__main__":
    import argparse
    parser = argparse.ArgumentParser()
@@ -75,4 +54,6 @@ if __name__ == "__main__":
    args = parser.parse_args()
 
    model = load_model(args.index, args.root_dir, args.folder_name, args.weight_name, args.config_pat)
-   gen_tokens(model, args.gen_amount)
+   
+   text_out = model.generate(text_init, args.gen_amount)
+   print(text_out)

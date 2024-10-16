@@ -2,6 +2,9 @@ from tinygrad import Tensor, nn, Variable # type: ignore
 from extra.models.llama import TransformerBlock, Attention, precompute_freqs_cis, apply_rotary_emb, repeat_kv # type: ignore
 
 from typing import List, Dict, Union, Optional, Tuple
+from sentencepiece import SentencePieceProcessor # type: ignore
+from tqdm import trange # type: ignore
+import math
 
 TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
@@ -90,6 +93,8 @@ class Generator:
       return x
 
 class CombinedModel:
+   tokenizer: Optional[SentencePieceProcessor] = None
+
    def __init__(self, vocab_size:int, max_context:int, n_layers:Dict[str,int], token_dim:int, cluster_dim:int, cluster_size:int, d_head:int, ff_mults:Dict[str,float]):
       self.enc = Encoder  (vocab_size, max_context,   n_layers["enc"], token_dim, cluster_dim, cluster_size, d_head, ff_mults["enc"])
       self.gen = Generator(            max_context-1, n_layers["gen"],            cluster_dim,               d_head, ff_mults["gen"])
@@ -113,6 +118,29 @@ class CombinedModel:
       acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
 
       return losses, acc
+
+   def generate(self, text_init:str, amount:int) -> str:
+      if self.tokenizer is None:
+         self.tokenizer = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
+      assert self.tokenizer is not None
+
+      tokens = self.tokenizer.Encode(text_init)
+      spare = len(tokens) % self.cluster_size
+      if spare > 0:
+         tokens = tokens[:-spare]
+      assert len(tokens) > 0, f"got no remaining tokens after cutting off {spare} spare"
+      assert len(tokens) % self.cluster_size == 0, "FATAL: invalid computation"
+
+      gen_amount = math.ceil(amount / self.cluster_size)
+
+      x = Tensor(tokens).unsqueeze(0)
+      z = self.enc(x)
+      for _ in trange(gen_amount):
+         z_h = self.gen(z)
+         z = z.cat(z_h[:, -1:, :], dim=1).realize()
+      tokens = self.dec(z).argmax(-1).numpy().tolist()
+
+      return self.tokenizer.Decode(tokens)[0]
 
 def create_models():
    MODEL_CONFIGS = 4
