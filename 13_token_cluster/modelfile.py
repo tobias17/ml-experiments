@@ -143,7 +143,7 @@ class CombinedModel:
       return self.tokenizer.Decode(tokens)[0]
 
 def create_models():
-   MODEL_CONFIGS = 4
+   MODEL_CONFIGS = 1
 
    VOCAB_SIZE = 32000
    D_HEAD = 32

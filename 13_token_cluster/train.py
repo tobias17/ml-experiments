@@ -1,10 +1,8 @@
-from tinygrad import Tensor, nn, Variable, dtypes, TinyJit, Device # type: ignore
+from tinygrad import Tensor, nn, dtypes, TinyJit, Device # type: ignore
 from tinygrad.nn.state import get_parameters # type: ignore
 from tinygrad.helpers import prod, BEAM, Context # type: ignore
-from extra.models.llama import TransformerBlock, Attention, precompute_freqs_cis, apply_rotary_emb, repeat_kv # type: ignore
 
-from sentencepiece import SentencePieceProcessor # type: ignore
-from typing import List, Dict, Union, Optional, Tuple
+from typing import List, Dict, Tuple
 import datetime, os, time
 import matplotlib.pyplot as plt # type: ignore
 import numpy as np # type: ignore
@@ -55,10 +53,7 @@ def main():
    # Define the Optimizer
    LEARNING_RATES = [
       2e-6,
-      2e-7,
-      2e-8,
-      2e-9,
-   ]
+   ]*MODEL_CONFIGS
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
