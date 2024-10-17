@@ -20,11 +20,13 @@ def main():
 
    models = create_models()
    MODEL_CONFIGS = len(models)
+   GPUS_PER_MODEL = 2
 
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
 
-   GPUS = [f"{Device.DEFAULT}:{i}" for i in range(MODEL_CONFIGS)]
+   GPUS = [f"{Device.DEFAULT}:{i}" for i in range(6)]
+   assert MODEL_CONFIGS * GPUS_PER_MODEL <= len(GPUS), f"{MODEL_CONFIGS} * {GPUS_PER_MODEL} > {len(GPUS)}"
 
    item_names = [
       "enc",
@@ -38,7 +40,7 @@ def main():
    for i in range(MODEL_CONFIGS):
       model_params = get_parameters(models[i])
       for w in model_params:
-         w.replace(w.to(GPUS[i])).realize()
+         w.replace(w.to(GPUS[i]) if GPUS_PER_MODEL == 1 else w.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL])).realize()
       params.append(model_params)
 
       text = f"{i}: "
@@ -54,11 +56,11 @@ def main():
    LEARNING_RATES = [
       2e-6,
    ]*MODEL_CONFIGS
-   optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
+   optims = [nn.optim.SGD(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
    DEVICE_BS = 16
-   GLOBAL_BS = DEVICE_BS
+   GLOBAL_BS = DEVICE_BS * GPUS_PER_MODEL
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
    GRAPH_EVERY = 200
@@ -72,7 +74,8 @@ def main():
    def train_step(orig_tokens:Tensor) -> List[Tuple[Tensor,Dict[str,Tensor],Tensor]]:
       ret_val = []
       for i in range(MODEL_CONFIGS):
-         losses, acc = models[i].training_loss(orig_tokens.to(GPUS[i]))
+         dev_tokens = orig_tokens.to(GPUS[i]) if GPUS_PER_MODEL == 1 else orig_tokens.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL], axis=0)
+         losses, acc = models[i].training_loss(dev_tokens)
          loss = sum(losses.values()).realize()
          optims[i].zero_grad()
          loss.backward()
