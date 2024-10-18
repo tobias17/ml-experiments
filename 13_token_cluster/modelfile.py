@@ -104,7 +104,10 @@ class CombinedModel:
       self.max_context = max_context
       self.cluster_size = cluster_size
 
-   def training_loss(self, orig_tokens:Tensor) -> Tuple[Dict[str,Tensor],Tensor]:
+   def get_trainable_parameters(self, cluster_loss:bool, decoded_loss:bool, predict_loss:bool) -> List[Tensor]:
+      return nn.state.get_parameters(self)
+
+   def compute_loss(self, orig_tokens:Tensor, cluster_loss:bool, decoded_loss:bool, predict_loss:bool) -> Tuple[Dict[str,Tensor],Tensor]:
       enc_clusters = self.enc(orig_tokens).realize()
       prd_clusters = self.gen(enc_clusters[:, :-1]).realize()
       dec_tokens   = self.dec(enc_clusters).realize()
