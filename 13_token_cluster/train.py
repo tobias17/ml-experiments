@@ -20,7 +20,7 @@ def main():
 
    models = create_models()
    MODEL_CONFIGS = len(models)
-   GPUS_PER_MODEL = 2
+   GPUS_PER_MODEL = 1
 
    # Load Dataset
    X_train, X_val = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
@@ -54,12 +54,15 @@ def main():
 
    # Define the Optimizer
    LEARNING_RATES = [
-      2e-6,
-   ]*MODEL_CONFIGS
-   optims = [nn.optim.SGD(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
+      2e-5,
+      2e-8,
+      2e-11,
+      2e-14,
+   ]
+   optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
-   DEVICE_BS = 16
+   DEVICE_BS = 12
    GLOBAL_BS = DEVICE_BS * GPUS_PER_MODEL
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 

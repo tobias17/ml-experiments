@@ -6,11 +6,11 @@ from sentencepiece import SentencePieceProcessor # type: ignore
 from tqdm import trange # type: ignore
 import math
 
-TOKEN_DIMS   = 256
+TOKEN_DIMS   = 192
 CLUSTER_SIZE = 8
-CLUSTER_DIMS = 1024
+CLUSTER_DIMS = 768
 
-MAX_CLUSTER_CONTEXT = 32
+MAX_CLUSTER_CONTEXT = 128
 
 NORM_EPS = 1e-5
 
@@ -143,20 +143,20 @@ class CombinedModel:
       return self.tokenizer.Decode(tokens)[0]
 
 def create_models():
-   MODEL_CONFIGS = 2
+   MODEL_CONFIGS = 4
 
    VOCAB_SIZE = 32000
    D_HEAD = 32
 
    # Define Models
    layers = {
-      "enc": 6,
-      "gen": 32,
-      "dec": 6,
+      "enc": 4,
+      "gen": 16,
+      "dec": 4,
    }
    ff_mults = {
       "enc": 2.0,
-      "gen": 3.0,
+      "gen": 2.0,
       "dec": 2.0,
    }
    return [CombinedModel(VOCAB_SIZE, MAX_CLUSTER_CONTEXT, layers, TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mults) for _ in range(MODEL_CONFIGS)]
