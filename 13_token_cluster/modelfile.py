@@ -104,21 +104,28 @@ class CombinedModel:
       self.max_context = max_context
       self.cluster_size = cluster_size
 
-   def get_trainable_parameters(self, cluster_loss:bool, decoded_loss:bool, predict_loss:bool) -> List[Tensor]:
-      return nn.state.get_parameters(self)
+   def get_trainable_parameters(self, predict_loss:bool, decoded_loss:bool, cluster_loss:bool) -> List[Tensor]:
+      params     = nn.state.get_parameters(self.enc)
+      if cluster_loss or predict_loss:
+         params += nn.state.get_parameters(self.gen)
+      if decoded_loss or predict_loss:
+         params += nn.state.get_parameters(self.dec)
+      return params
 
-   def compute_loss(self, orig_tokens:Tensor, cluster_loss:bool, decoded_loss:bool, predict_loss:bool) -> Tuple[Dict[str,Tensor],Tensor]:
-      enc_clusters = self.enc(orig_tokens).realize()
-      prd_clusters = self.gen(enc_clusters[:, :-1]).realize()
-      dec_tokens   = self.dec(enc_clusters).realize()
-      prd_tokens   = self.dec(prd_clusters).realize()
+   def compute_loss(self, orig_tokens:Tensor, predict_loss:bool, decoded_loss:bool, cluster_loss:bool) -> Tuple[Dict[str,Tensor],Tensor]:
+      enc_clusters = self.enc(orig_tokens)
+      prd_clusters = self.gen(enc_clusters[:, :-1])
+      dec_tokens   = self.dec(enc_clusters)
+      prd_tokens   = self.dec(prd_clusters)
 
-      losses = {
-         "cluster": (enc_clusters[:, 1:] - prd_clusters).square().mean().realize(),
-         "decoded": dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize(),
-         "predict": prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize(),
-      }
-      acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
+      losses: Dict[str,Tensor] = {}
+      if predict_loss: losses["predict"] = prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize()
+      if decoded_loss: losses["decoded"] = dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize()
+      if cluster_loss: losses["cluster"] = (enc_clusters[:, 1:] - prd_clusters).square().mean().realize()
+
+      if   predict_loss: acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
+      elif decoded_loss: acc = (dec_tokens.argmax(axis=-1) == orig_tokens                  ).mean().realize()
+      else:              acc = Tensor.zeros(1) - 0.01
 
       return losses, acc
 
@@ -146,7 +153,7 @@ class CombinedModel:
       return self.tokenizer.Decode(tokens)[0]
 
 def create_models():
-   MODEL_CONFIGS = 4
+   MODEL_CONFIGS = 1
 
    VOCAB_SIZE = 32000
    D_HEAD = 32

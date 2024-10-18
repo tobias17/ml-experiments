@@ -24,8 +24,8 @@ class TrainingData:
    def to_json(self) -> Dict: return asdict(self)
 
 
-def train_model(restore:Optional[str], cluster_loss:bool, decoded_loss:bool, predict_loss:bool, keep_all_weights:bool):
-   assert any([cluster_loss, decoded_loss, predict_loss]), "atleast 1 loss type is required, got 0"
+def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, cluster_loss:bool, keep_all_weights:bool):
+   assert any([predict_loss, decoded_loss, cluster_loss]), "atleast 1 loss type is required, got 0"
 
    Tensor.manual_seed(42)
    Tensor.training = True
@@ -66,7 +66,8 @@ def train_model(restore:Optional[str], cluster_loss:bool, decoded_loss:bool, pre
    params = []
    print("\nModel Parameters (B):")
    for i in range(MODEL_CONFIGS):
-      model_params = models[i].get_trainable_parameters(cluster_loss, decoded_loss, predict_loss)
+      model_params = models[i].get_trainable_parameters(predict_loss, decoded_loss, cluster_loss)
+      trainable_params = sum(prod(p.shape) for p in model_params) * MULT
       for w in model_params:
          w.replace(w.to(GPUS[i]) if GPUS_PER_MODEL == 1 else w.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL])).realize()
       params.append(model_params)
@@ -77,20 +78,17 @@ def train_model(restore:Optional[str], cluster_loss:bool, decoded_loss:bool, pre
          item_param_count = sum(prod(p.shape) for p in nn.state.get_parameters(getattr(models[i], name))) * MULT
          text += f"{name}={item_param_count:.3f}, "
          total += item_param_count
-      print(f"{text}total={total:.3f}")
+      print(f"{text}total={total:.3f}, trainable={trainable_params:.3f}")
    print("")
 
    # Define the Optimizer
    LEARNING_RATES = [
-      2e-5,
       2e-8,
-      2e-11,
-      2e-14,
    ]
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
-   DEVICE_BS = 12
+   DEVICE_BS = 4
    GLOBAL_BS = DEVICE_BS * GPUS_PER_MODEL
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
@@ -106,7 +104,7 @@ def train_model(restore:Optional[str], cluster_loss:bool, decoded_loss:bool, pre
       ret_val = []
       for i in range(MODEL_CONFIGS):
          dev_tokens = orig_tokens.to(GPUS[i]) if GPUS_PER_MODEL == 1 else orig_tokens.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL], axis=0)
-         losses, acc = models[i].compute_loss(dev_tokens, cluster_loss, decoded_loss, predict_loss)
+         losses, acc = models[i].compute_loss(dev_tokens, predict_loss, decoded_loss, cluster_loss)
          loss = sum(losses.values()).realize()
          optims[i].zero_grad()
          loss.backward()
@@ -203,9 +201,9 @@ if __name__ == "__main__":
    import argparse
    parser = argparse.ArgumentParser()
    parser.add_argument('-r', '--restore-folder', type=str)
-   parser.add_argument('--cluster-loss', action='store_true')
-   parser.add_argument('--decoded-loss', action='store_true')
    parser.add_argument('--predict-loss', action='store_true')
+   parser.add_argument('--decoded-loss', action='store_true')
+   parser.add_argument('--cluster-loss', action='store_true')
    parser.add_argument('--keep-all-weights', action='store_true')
    args = parser.parse_args()
-   train_model(args.restore_folder, args.cluster_loss, args.decoded_loss, args.predict_loss, args.keep_all_weights)
+   train_model(args.restore_folder, args.predict_loss, args.decoded_loss, args.cluster_loss, args.keep_all_weights)
