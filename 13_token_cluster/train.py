@@ -167,9 +167,12 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
                         ys[label] = []
                      xs[label].append(chunk["index"])
                      ys[label].append(chunk[label])
+               max_95th = 0.0
                for label in xs.keys():
-                  plt.plot(xs[label], ys[label], label=label)
-               plt.ylim((0,None))
+                  xnp, ynp = np.array(xs[label]), np.array(ys[label])
+                  max_95th = max(max_95th, np.percentile(ynp, 95))
+                  plt.plot(xnp, ynp, label=label)
+               plt.ylim((0, max_95th*1.2))
                plt.title("Loss")
                plt.legend()
                figure = plt.gcf()

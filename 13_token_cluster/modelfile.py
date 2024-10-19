@@ -123,7 +123,7 @@ class CombinedModel:
       losses: Dict[str,Tensor] = {}
       if predict_loss: losses["predict"] = prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize()
       if decoded_loss: losses["decoded"] = dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize()
-      if cluster_loss: losses["cluster"] = (enc_clusters.detach()[:, 1:] - prd_clusters).square().mean().mul(20.0).realize()
+      if cluster_loss: losses["cluster"] = (enc_clusters.detach()[:, 1:] - prd_clusters).square().mean().mul(1000).log().realize()
 
       if   predict_loss: acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
       elif decoded_loss: acc = (dec_tokens.argmax(axis=-1) == orig_tokens                  ).mean().realize()
