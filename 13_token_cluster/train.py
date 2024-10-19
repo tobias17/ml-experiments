@@ -87,7 +87,10 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
 
    # Define the Optimizer
    LEARNING_RATES = [
-      2e-7,
+      2e-8,
+      2e-9,
+      2e-10,
+      2e-11,
    ]
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
