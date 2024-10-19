@@ -66,12 +66,16 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
    params = []
    print("\nModel Parameters (B):")
    for i in range(MODEL_CONFIGS):
+      # get the trainable parameters
       model_params = models[i].get_trainable_parameters(predict_loss, decoded_loss, cluster_loss)
       trainable_params = sum(prod(p.shape) for p in model_params) * MULT
-      for w in model_params:
-         w.replace(w.to(GPUS[i]) if GPUS_PER_MODEL == 1 else w.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL])).realize()
       params.append(model_params)
 
+      # move all weights (even the untrainable ones, makes step logic easier)
+      for w in nn.state.get_parameters(models[i]):
+         w.replace(w.to(GPUS[i]) if GPUS_PER_MODEL == 1 else w.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL])).realize()
+
+      # report param count split by compontent
       text = f"{i}: "
       total = 0
       for name in item_names:
@@ -83,12 +87,12 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
 
    # Define the Optimizer
    LEARNING_RATES = [
-      2e-8,
+      2e-7,
    ]
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
-   DEVICE_BS = 4
+   DEVICE_BS = 32
    GLOBAL_BS = DEVICE_BS * GPUS_PER_MODEL
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
@@ -204,6 +208,13 @@ if __name__ == "__main__":
    parser.add_argument('--predict-loss', action='store_true')
    parser.add_argument('--decoded-loss', action='store_true')
    parser.add_argument('--cluster-loss', action='store_true')
+   parser.add_argument('--all-loss', action='store_true')
    parser.add_argument('--keep-all-weights', action='store_true')
    args = parser.parse_args()
-   train_model(args.restore_folder, args.predict_loss, args.decoded_loss, args.cluster_loss, args.keep_all_weights)
+   train_model(
+      args.restore_folder,
+      args.predict_loss or args.all_loss,
+      args.decoded_loss or args.all_loss,
+      args.cluster_loss or args.all_loss,
+      args.keep_all_weights
+   )
