@@ -92,13 +92,13 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
-   DEVICE_BS = 32
+   DEVICE_BS = 24
    GLOBAL_BS = DEVICE_BS * GPUS_PER_MODEL
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
    AVERAGE_EVERY = 200
    GRAPH_EVERY   = 200
-   SAVE_EVERY    = 10000
+   SAVE_EVERY    = 4000
 
    train_loss_chunks: List[Dict[str,List[float]]] = [{} for _ in range(MODEL_CONFIGS)]
    average_index_start = data.dataset_i
@@ -173,7 +173,7 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
                plt.title("Loss")
                plt.legend()
                figure = plt.gcf()
-               figure.set_size_inches(18/1.5, 10/1.5)
+               figure.set_size_inches(18, 10)
                if not os.path.exists(weights_folder): os.makedirs(weights_folder)
                plt.savefig(os.path.join(weights_folder, f"graph_loss_c{i}.png"), dpi=100)
          

@@ -105,7 +105,9 @@ class CombinedModel:
       self.cluster_size = cluster_size
 
    def get_trainable_parameters(self, predict_loss:bool, decoded_loss:bool, cluster_loss:bool) -> List[Tensor]:
-      params     = nn.state.get_parameters(self.enc)
+      params: List[Tensor] = []
+      if decoded_loss or predict_loss:
+         params += nn.state.get_parameters(self.enc)
       if cluster_loss or predict_loss:
          params += nn.state.get_parameters(self.gen)
       if decoded_loss or predict_loss:
@@ -121,7 +123,7 @@ class CombinedModel:
       losses: Dict[str,Tensor] = {}
       if predict_loss: losses["predict"] = prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize()
       if decoded_loss: losses["decoded"] = dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize()
-      if cluster_loss: losses["cluster"] = (enc_clusters[:, 1:] - prd_clusters).square().mean().realize()
+      if cluster_loss: losses["cluster"] = (enc_clusters.detach()[:, 1:] - prd_clusters).square().mean().mul(20.0).realize()
 
       if   predict_loss: acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
       elif decoded_loss: acc = (dec_tokens.argmax(axis=-1) == orig_tokens                  ).mean().realize()
