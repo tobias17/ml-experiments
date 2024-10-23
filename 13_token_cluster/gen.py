@@ -25,12 +25,12 @@ def load_model(index:int, root_dir:str, folder_name:str, weight_name:str, config
 
    weight_path = os.path.join(run_dir, weight_name)
    assert os.path.isfile(weight_path), f"expected to find a weights file at {weight_path}"
+   print(f"Loading weights from {weight_path}")
 
    sys.path.append(run_dir)
    from modelfile import create_models
-   model = create_models()[index]
+   model = create_models()[0]
 
-   print(f"Loading weights from {weight_path}")
    load_state_dict(model, safe_load(weight_path))
 
    return model
@@ -49,7 +49,7 @@ if __name__ == "__main__":
    parser.add_argument('-f', '--folder-name', type=str, default='latest')
    parser.add_argument('-w', '--weight-name', type=str, default='latest')
    parser.add_argument('-c', '--config-pat',  type=str, default='_c{0}.st')
-   parser.add_argument('-g', '--gen-amount',  type=int, default=4)
+   parser.add_argument('-g', '--gen-amount',  type=int, default=32)
    args = parser.parse_args()
 
    model = load_model(args.index, args.root_dir, args.folder_name, args.weight_name, args.config_pat)

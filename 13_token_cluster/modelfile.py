@@ -116,14 +116,18 @@ class CombinedModel:
 
    def compute_loss(self, orig_tokens:Tensor, predict_loss:bool, decoded_loss:bool, cluster_loss:bool) -> Tuple[Dict[str,Tensor],Tensor]:
       enc_clusters = self.enc(orig_tokens)
-      prd_clusters = self.gen(enc_clusters[:, :-1])
-      dec_tokens   = self.dec(enc_clusters)
-      prd_tokens   = self.dec(prd_clusters)
 
       losses: Dict[str,Tensor] = {}
-      if predict_loss: losses["predict"] = prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize()
-      if decoded_loss: losses["decoded"] = dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize()
-      if cluster_loss: losses["cluster"] = (enc_clusters.detach()[:, 1:] - prd_clusters).square().mean().mul(1000).log().realize()
+      if predict_loss:
+         prd_clusters = self.gen(enc_clusters[:, :-1])
+         prd_tokens   = self.dec(prd_clusters)
+         losses["predict"] = prd_tokens.sparse_categorical_crossentropy(orig_tokens[:, CLUSTER_SIZE:]).realize()
+      if decoded_loss:
+         dec_tokens   = self.dec(enc_clusters)
+         losses["decoded"] = dec_tokens.sparse_categorical_crossentropy(orig_tokens).realize()
+      if cluster_loss:
+         prd_clusters = self.gen(enc_clusters[:, :-1].detach())
+         losses["cluster"] = (enc_clusters.detach()[:, 1:] - prd_clusters).square().mean().mul(1000).log().realize()
 
       if   predict_loss: acc = (prd_tokens.argmax(axis=-1) == orig_tokens[:, CLUSTER_SIZE:]).mean().realize()
       elif decoded_loss: acc = (dec_tokens.argmax(axis=-1) == orig_tokens                  ).mean().realize()

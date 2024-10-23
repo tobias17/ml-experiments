@@ -34,7 +34,7 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
 
    models = create_models()
    MODEL_CONFIGS = len(models)
-   GPUS_PER_MODEL = 1
+   GPUS_PER_MODEL = 4
 
    # Potentially Pick Up Old Weights
    if restore is not None:
