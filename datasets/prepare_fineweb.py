@@ -7,7 +7,7 @@ import os
 OUT_ROOT = "/raid/datasets/fineweb/tokenized"
 if not os.path.exists(OUT_ROOT):
    os.makedirs(OUT_ROOT)
-num_proc = 24
+num_proc = 56
 
 if __name__ == '__main__':
    tokenizer = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")

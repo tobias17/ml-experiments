@@ -33,8 +33,8 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
    BEAM.value = 0
 
    models = create_models()
-   MODEL_CONFIGS = len(models)
-   GPUS_PER_MODEL = 4
+   MODEL_CONFIGS  = len(models)
+   GPUS_PER_MODEL = 1
 
    # Potentially Pick Up Old Weights
    if restore is not None:
@@ -87,17 +87,19 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
 
    # Define the Optimizer
    LEARNING_RATES = [
-      2e-9,
+      2**-12,
+      2**-15,
+      2**-18,
    ]
    optims = [nn.optim.AdamW(params[i], LEARNING_RATES[i]) for i in range(MODEL_CONFIGS)]
 
    # Define some Globals
-   DEVICE_BS = 24
+   DEVICE_BS = 8
    GLOBAL_BS = DEVICE_BS * GPUS_PER_MODEL
    TOKENS_CONTEXT_SIZE = MAX_CLUSTER_CONTEXT * CLUSTER_SIZE
 
-   AVERAGE_EVERY = 200
-   GRAPH_EVERY   = 200
+   AVERAGE_EVERY = 500
+   GRAPH_EVERY   = 500
    SAVE_EVERY    = 4000
 
    train_loss_chunks: List[Dict[str,List[float]]] = [{} for _ in range(MODEL_CONFIGS)]
@@ -107,7 +109,7 @@ def train_model(restore:Optional[str], predict_loss:bool, decoded_loss:bool, clu
    def train_step(orig_tokens:Tensor) -> List[Tuple[Tensor,Dict[str,Tensor],Tensor]]:
       ret_val = []
       for i in range(MODEL_CONFIGS):
-         dev_tokens = orig_tokens.to(GPUS[i]) if GPUS_PER_MODEL == 1 else orig_tokens.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL], axis=0)
+         dev_tokens = orig_tokens.to(GPUS[i]) if GPUS_PER_MODEL == 1 else orig_tokens.shard(GPUS[i*GPUS_PER_MODEL:(i+1)*GPUS_PER_MODEL], axis=0) # type: ignore
          losses, acc = models[i].compute_loss(dev_tokens, predict_loss, decoded_loss, cluster_loss)
          loss = sum(losses.values()).realize()
          optims[i].zero_grad()

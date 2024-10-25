@@ -6,15 +6,15 @@ from sentencepiece import SentencePieceProcessor # type: ignore
 from tqdm import trange # type: ignore
 import math
 
-TOKEN_DIMS   = 192
+TOKEN_DIMS   = 256
 CLUSTER_SIZE = 8
-CLUSTER_DIMS = 768
+CLUSTER_DIMS = 1024
 
 MAX_CLUSTER_CONTEXT = 64
 
 NORM_EPS = 1e-5
 
-def __call__(self:Attention, x:Tensor, start_pos:Union[Variable,int], freqs_cis:Tensor, mask:Optional[Tensor]) -> Tensor:
+def __call__(self:Attention, x:Tensor, start_pos, freqs_cis:Tensor, mask:Optional[Tensor]) -> Tensor:
    xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
    xq = xq.reshape(xq.shape[0], xq.shape[1], self.n_heads, self.head_dim)
@@ -159,7 +159,7 @@ class CombinedModel:
       return self.tokenizer.Decode(tokens)[0]
 
 def create_models():
-   MODEL_CONFIGS = 1
+   MODEL_CONFIGS = 3
 
    VOCAB_SIZE = 32000
    D_HEAD = 32
@@ -167,12 +167,12 @@ def create_models():
    # Define Models
    layers = {
       "enc": 4,
-      "gen": 16,
+      "gen": 32,
       "dec": 4,
    }
    ff_mults = {
-      "enc": 2.0,
-      "gen": 2.0,
-      "dec": 2.0,
+      "enc": 1.5,
+      "gen": 3.0,
+      "dec": 1.5,
    }
    return [CombinedModel(VOCAB_SIZE, MAX_CLUSTER_CONTEXT, layers, TOKEN_DIMS, CLUSTER_DIMS, CLUSTER_SIZE, D_HEAD, ff_mults) for _ in range(MODEL_CONFIGS)]
