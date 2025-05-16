@@ -1,9 +1,12 @@
 from tinygrad import Tensor, TinyJit, dtypes, nn
-
+from tinygrad.helpers import prod
 import numpy as np
 
+from training_controller import Controller
+from util import compress
+
 class ModelConfig:
-   n_layers: int = 8
+   n_layers: int = 24
    dim: int = 512
    vocab_size: int = 32000
    ctx_length: int = 1024
@@ -12,7 +15,7 @@ class ModelConfig:
    @property
    def head_d(self) -> int: return self.dim // self.n_heads
 
-   ff_mult: float = 4.0
+   ff_mult: float = 3.0
    @property
    def ff_dim(self) -> int: return int(self.dim * self.ff_mult)
    @property
@@ -61,15 +64,23 @@ class Model:
          x = layer(x)
       return self.proj_out(x)
 
+class Keys:
+   TRAIN = "train"
+
+BS = 4
+LR = 2**-18
+
 def train():
    Tensor.training = True
 
    X_train, _ = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
 
+   ctr = Controller()
    mdl = Model(cfg := ModelConfig())
-   opt = nn.optim.AdamW(nn.state.get_parameters(mdl))
+   opt = nn.optim.AdamW(params := nn.state.get_parameters(mdl), LR)
 
-   BS = 4
+   print(f"\nModel Parameters: {compress(sum(prod(p.shape) for p in params), ['k','m','b'])}\n") # type: ignore
+
    CHUNK_SIZE = BS*(cfg.ctx_length+1)
 
    @TinyJit
@@ -80,10 +91,13 @@ def train():
       opt.step()
       return loss
 
-   for i in range(100):
-      Tensor.manual_seed(i)
-      loss = step(Tensor(np.asarray(X_train[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]), dtype=dtypes.int32).reshape(BS, -1))
-      print(f"{i:04d}: {loss.item():.4f}")
+   while (i := ctr.loop_start()) is not None:
+
+      with ctr.time_block("train"):
+         Tensor.manual_seed(i)
+         loss = step(Tensor(np.asarray(X_train[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]), dtype=dtypes.int32).reshape(BS, -1))
+
+      ctr.print_step(loss.item(), timings=True)
 
 
 if __name__ == "__main__":

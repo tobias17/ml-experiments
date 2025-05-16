@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from enum import Enum, auto
-from typing import Dict
+from typing import Dict, List
 
 class Schedules(Enum):
    LINEAR = auto()
@@ -58,3 +58,19 @@ def write_probs(data, save_dirpath, ylim=(0,None), delta=1, offset=0, x_label=No
    figure = plt.gcf()
    figure.set_size_inches(18/1.5, 10/1.5)
    plt.savefig(save_dirpath, dpi=100)
+
+def shrink_format(x:float) -> str:
+   return f"{x:.2f}" if x < 10 else (f"{x:.1f}" if x < 100 else str(int(x)))
+
+def compress(x:float, labels:List[str], step:int=1000, fmt=shrink_format) -> str:
+   i = 0
+   padded_labels = [""] + labels
+   while True:
+      if x < step or i == len(padded_labels) - 1:
+         return fmt(x) + padded_labels[i]
+      x /= step
+      i += 1
+
+if __name__ == "__main__":
+   for v in [1, 500, 1000, 2000, 20000, 200000, 2000000, 20000000]:
+      print(compress(v, ["k", "m", "b"]))
