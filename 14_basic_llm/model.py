@@ -1,4 +1,6 @@
-from tinygrad import Tensor, nn
+from tinygrad import Tensor, TinyJit, dtypes, nn
+
+import numpy as np
 
 class ModelConfig:
    n_layers: int = 8
@@ -14,7 +16,7 @@ class ModelConfig:
    @property
    def ff_dim(self) -> int: return int(self.dim * self.ff_mult)
    @property
-   def ff_act(self): return Tensor.leakyrelu
+   def ff_act(self): return Tensor.leaky_relu
 
 class Attention:
    def __init__(self, cfg:ModelConfig):
@@ -23,7 +25,7 @@ class Attention:
       self.n_heads  = cfg.n_heads
       self.head_d   = cfg.head_d
    def __call__(self, x:Tensor) -> Tensor:
-      q,k,v = self.proj_in(x).chunk(3)
+      q,k,v = self.proj_in(x).chunk(3, dim=-1)
       q,k,v = [y.rearrange('b c (h d) -> b h c d', h=self.n_heads, d=self.head_d) for y in (q,k,v)]
       h = Tensor.scaled_dot_product_attention(q,k,v)
       h = h.rearrange('b h c d -> b c (h d)')
@@ -58,3 +60,31 @@ class Model:
       for layer in self.layers:
          x = layer(x)
       return self.proj_out(x)
+
+def train():
+   Tensor.training = True
+
+   X_train, _ = [np.memmap(f"/raid/datasets/fineweb/tokenized/fineweb_{split}.bin", dtype=np.uint16, mode='r') for split in ('train', 'val')]
+
+   mdl = Model(cfg := ModelConfig())
+   opt = nn.optim.AdamW(nn.state.get_parameters(mdl))
+
+   BS = 4
+   CHUNK_SIZE = BS*(cfg.ctx_length+1)
+
+   @TinyJit
+   @Tensor.train()
+   def step(chk:Tensor) -> Tensor:
+      opt.zero_grad()
+      loss = mdl(chk[:,:-1]).sparse_categorical_crossentropy(chk[:,1:]).backward()
+      opt.step()
+      return loss
+
+   for i in range(100):
+      Tensor.manual_seed(i)
+      loss = step(Tensor(np.asarray(X_train[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]), dtype=dtypes.int32).reshape(BS, -1))
+      print(f"{i:04d}: {loss.item():.4f}")
+
+
+if __name__ == "__main__":
+   train()
