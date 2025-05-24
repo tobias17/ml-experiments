@@ -1,10 +1,13 @@
 from sentence_transformers import SentenceTransformer
+from sentencepiece import SentencePieceProcessor # type: ignore
 from datasets import load_dataset # type: ignore
 from tqdm import tqdm
 import os, json
 
-MAX_BLOCK_SIZE = 1024
-BLOCK_OVERLAP  = 64
+from common import split_list_with_overlap
+
+MAX_BLOCK_SIZE = 512
+BLOCK_OVERLAP  = 32
 SHIFT_AMOUNT   = MAX_BLOCK_SIZE - BLOCK_OVERLAP
 
 BLOCKS_PER_BATCH     =  4 * 1024
@@ -14,12 +17,17 @@ OUT_ROOT = "/raid/datasets/wikipedia/sentence-embedding"
 if not os.path.exists(OUT_ROOT):
    os.makedirs(OUT_ROOT)
 
-SPLITTERS = ["\n\nSee also\n\n", "\n\nReferences\n\n", "\n\nCitations\n\n", "\n\nNotes and references\n\n", "\n\nFurther reading\n\n", "\n\nExternal links\n\n", "\n\nNotes\n\n"]
+SPLITTERS = ["See also", "References", "Citations", "Notes and references", "Further reading", "External links", "Notes"]
 def clean_text(text:str) -> str|None:
-   for splitter in SPLITTERS:
-      if splitter in text:
-         return text.split(splitter, 1)[0]
-   return None
+   mintext = text
+   for base in SPLITTERS:
+      for suffix in ["", " ", "  "]:
+         splitter = f"\n\n{base}{suffix}\n\n"
+         if splitter in text:
+            newtext = text.split(splitter, 1)[0]
+            if len(newtext) < len(mintext):
+               mintext = newtext
+   return None if len(mintext) == len(text) else mintext
 
 def make_filename(i:int) -> str:
    return  f"blob_{i:04d}.st"
@@ -32,6 +40,7 @@ def create():
    import torch
 
    model = load_sentence_model()
+   tokenizer = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
 
    ds = load_dataset("wikimedia/wikipedia", "20231101.en")
    train_ds = ds["train"]
@@ -42,65 +51,67 @@ def create():
          info = json.load(f)
       assert info["size"] == MAX_ENTRIES_PER_FILE, f'size {info["size"]} != {MAX_ENTRIES_PER_FILE} in cached files'
    else:
-      info = { "i":0, "size":MAX_ENTRIES_PER_FILE, "blobs":[] }
+      info = { "i":-1, "size":MAX_ENTRIES_PER_FILE, "blobs":[] }
 
    # print(train_ds.select([20])["title"])
    # return
 
-   document_ids = []
-   text_start = []
-   blocks = []
-   embeddings = [] # type: ignore
+   idx = []
+   tok = []
+   blk = []
+   emb = [] # type: ignore
 
    i = -1
-   for row in tqdm(train_ds):
+   for row in tqdm(train_ds, disable=True):
       i += 1
       if info["i"] >= i:
          continue
-      # if i >= 30:
+      # if i >= 10:
       #    break
 
-      # title: str = row["title"]
+      title: str = row["title"]
       orig = row["text"]
       text = clean_text(orig)
       if text is None:
          # print(f"WARNING: entry '{title}' did not contain splitter, skipping")
          continue
-      # print(f"Row {i}: '{title}', text length: {len(orig)} -> {len(text)}")
+      
+      tokens = tokenizer.Encode(text)
+      chunks, _ = split_list_with_overlap(tokens, MAX_BLOCK_SIZE, BLOCK_OVERLAP)
+      if chunks is None:
+         continue
 
-      ptr = 0
-      while True:
-         document_ids.append(i)
-         text_start.append(ptr)
-         blocks.append(text[ptr:(ptr+MAX_BLOCK_SIZE)])
+      # print(f"Row {i}: '{title}', text length: {len(orig)} -> {len(text)}, token count: {len(tokens)}, k: {len(chunks)}")
 
-         if len(blocks) >= BLOCKS_PER_BATCH:
-            # print("Encoding block")
-            embeddings += model.encode(blocks, convert_to_tensor=True)
-            blocks = []
+      for chunk in chunks:
+         idx.append(i)
+         tok.append(chunk)
+         text = tokenizer.Decode(chunk)
+         assert text is not None
+         blk.append(text)
+      
+         if len(blk) >= BLOCKS_PER_BATCH:
+            emb += model.encode(blk, convert_to_tensor=True)
+            blk = []
 
-            if len(embeddings) >= MAX_ENTRIES_PER_FILE:
+            if len(emb) >= MAX_ENTRIES_PER_FILE:
                filename = make_filename(len(info['blobs']))
                info["i"] = i
                info["blobs"].append(filename)
                data = {
-                  "document_id": torch.Tensor(document_ids).int(),
-                  "text_start": torch.Tensor(text_start).int(),
-                  "embeddings": torch.stack(embeddings),
+                  "idx": torch.Tensor(idx).int(),
+                  "tok": torch.Tensor(tok).int(),
+                  "emb": torch.stack(emb).half(),
                }
                save_file(data, os.path.join(OUT_ROOT, filename))
                with open(info_file, "w") as f:
                   json.dump(info, f)
-               print(f"Data contains [{data['document_id'].shape}] [{data['text_start'].shape}] [{data['embeddings'].shape}] rows")
+               print(f"Data contains idx[{data['idx'].shape}] tok[{data['tok'].shape}] emb[{data['emb'].shape}] rows")
                print(f"Saved embeddings to {filename}")
 
-               document_ids = []
-               text_start = []
-               embeddings = []
-
-         ptr += SHIFT_AMOUNT
-         if ptr >= len(text):
-            break
+               idx = []
+               tok = []
+               emb = []
 
 
 def use():
@@ -163,5 +174,6 @@ def use():
          block = row['text'][aptr:aptr+MAX_BLOCK_SIZE]
          print(f"\nRank: {i+1}\nSim:  {top_val[i]:.4f}\nName: {row['title']}\n" + ">"*40 + f"\n{block}\n" + "<"*40 + "\n")
 
+
 if __name__ == "__main__":
-   use()
+   create()
