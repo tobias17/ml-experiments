@@ -32,15 +32,19 @@ def clean_text(text:str) -> str|None:
 def make_filename(i:int) -> str:
    return  f"blob_{i:04d}.st"
 
+def load_tokenizer() -> SentencePieceProcessor:
+   return SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
+
 def load_sentence_model() -> SentenceTransformer:
    return SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+
 
 def create():
    from safetensors.torch import save_file
    import torch
 
    model = load_sentence_model()
-   tokenizer = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
+   tokenizer = load_tokenizer()
 
    ds = load_dataset("wikimedia/wikipedia", "20231101.en")
    train_ds = ds["train"]
@@ -62,7 +66,7 @@ def create():
    emb = [] # type: ignore
 
    i = -1
-   for row in tqdm(train_ds, disable=True):
+   for row in tqdm(train_ds, disable=False):
       i += 1
       if info["i"] >= i:
          continue
@@ -119,13 +123,9 @@ def use():
    Device.DEFAULT = "CUDA"
    GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(1,5))
 
-   ds = load_dataset("wikimedia/wikipedia", "20231101.en")
-   train_ds = ds["train"]
-
-   def to_dev(x:Tensor, axis=None) -> Tensor:
-      return x
-
    model = load_sentence_model()
+   tokenizer = load_tokenizer()
+
    data_list = {} # type: ignore
    for i in range(128):
       filepath = os.path.join(OUT_ROOT, make_filename(i))
@@ -136,17 +136,16 @@ def use():
          if k not in data_list:
             data_list[k] = []
          new_value = v.to(Device.DEFAULT)
-         if k == "embeddings":
+         if k == "emb":
             new_value = new_value.cast(dtypes.float16).reshape(-1, len(GPUS), new_value.shape[-1]).shard(GPUS, axis=1).realize()
          data_list[k].append(new_value)
    data_cat = {}
    for k, v in data_list.items():
-      data_cat[k] = Tensor.cat(*v).realize()
+      data_cat[k] = Tensor.cat(*v).realize() # type: ignore
       print(f"{k}: {data_cat[k].shape}")
 
-   ref = data_cat["embeddings" ]
-   ids = data_cat["document_id"]
-   ptr = data_cat["text_start" ]
+   ref = data_cat["emb"]
+   tok = data_cat["tok"].numpy()
    print(f"{ref.shape=}")
 
    def norm(x:Tensor, dim:int=-1, eps:float=1e-8) -> Tensor:
@@ -167,13 +166,18 @@ def use():
    TOP_K = 10
    top_val, top_ind = [v.numpy() for v in sim.topk(TOP_K)]
    for i in range(TOP_K):
-      amax = int(top_ind[i])
-      aids = int(ids[amax].item())
-      aptr = int(ptr[amax].item())
-      for row in train_ds.select([aids]):
-         block = row['text'][aptr:aptr+MAX_BLOCK_SIZE]
-         print(f"\nRank: {i+1}\nSim:  {top_val[i]:.4f}\nName: {row['title']}\n" + ">"*40 + f"\n{block}\n" + "<"*40 + "\n")
+      ref_text = tokenizer.Decode(tok[int(top_ind[i])].tolist())
+      print(f"\nRank: {i+1}\nSim:  {top_val[i]:.4f}\n" + ">"*40 + f"\n{ref_text}\n" + "<"*40 + "\n")
 
 
 if __name__ == "__main__":
-   create()
+   fnx_map = {
+      "create": create,
+      "use": use,
+   }
+   import argparse
+   parser = argparse.ArgumentParser()
+   parser.add_argument("--run", type=str, choices=list(fnx_map.keys()), default="create")
+   args = parser.parse_args()
+
+   fnx_map[args.run]()
