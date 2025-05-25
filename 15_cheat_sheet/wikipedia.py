@@ -8,7 +8,6 @@ from common import split_list_with_overlap
 
 MAX_BLOCK_SIZE = 512
 BLOCK_OVERLAP  = 32
-SHIFT_AMOUNT   = MAX_BLOCK_SIZE - BLOCK_OVERLAP
 
 BLOCKS_PER_BATCH     =  4 * 1024
 MAX_ENTRIES_PER_FILE = 64 * 1024
@@ -36,7 +35,7 @@ def load_tokenizer() -> SentencePieceProcessor:
    return SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
 
 def load_sentence_model() -> SentenceTransformer:
-   return SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+   return SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device="cuda:1")
 
 
 def create():
@@ -81,7 +80,7 @@ def create():
          continue
       
       tokens = tokenizer.Encode(text)
-      chunks, _ = split_list_with_overlap(tokens, MAX_BLOCK_SIZE, BLOCK_OVERLAP)
+      chunks = split_list_with_overlap(tokens, MAX_BLOCK_SIZE, BLOCK_OVERLAP)
       if chunks is None:
          continue
 
