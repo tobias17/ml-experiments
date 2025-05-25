@@ -1,5 +1,5 @@
 from tinygrad import Tensor, dtypes, nn, Device, TinyJit
-from typing import List
+from typing import List, Tuple
 import numpy as np
 import os
 
@@ -8,14 +8,15 @@ from common import (
    ENTRIES_PER_FILE,
 )
 
-LOAD_SLICES: int = 1024 * 16
+LOAD_SLICES: int = 1024 * 4
 LOAD_SIZE:   int = ENTRIES_PER_FILE // LOAD_SLICES
 assert LOAD_SLICES * LOAD_SIZE == ENTRIES_PER_FILE
 
 WIKI_ROOT     = "/raid/datasets/wikipedia/sentence-embedding"
 FINE_WEB_ROOT = "/raid/datasets/fineweb/sentence-embedding"
 
-GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(1,5))
+EMB_GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(1,5))
+# TOK_GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(4,6))
 
 def main():
    tokenizer = load_tokenizer()
@@ -24,17 +25,26 @@ def main():
    #   Load Wiki Data   #
    ######################
    wiki_list = {} # type: ignore
+   dtype_dev_map = {
+      "emb": (dtypes.float16, EMB_GPUS),
+      # "tok": (dtypes.int32,   TOK_GPUS),
+   }
+   tok_disktensors = []
    for i in range(1024):
       filepath = os.path.join(WIKI_ROOT, make_filename(i))
       if not os.path.exists(filepath):
          break
       sd = nn.state.safe_load(filepath)
       for k, v in sd.items():
+         if k == "tok":
+            tok_disktensors.append(v)
+            continue
+         if k not in dtype_dev_map:
+            continue
+         target_dtype, gpus = dtype_dev_map[k]
          if k not in wiki_list:
             wiki_list[k] = []
-         new_value = v.to(Device.DEFAULT)
-         if k == "emb":
-            new_value = new_value.reshape(-1, len(GPUS), new_value.shape[-1]).shard(GPUS, axis=1).realize()
+         new_value = v.reshape(-1, len(gpus), v.shape[-1]).shard(gpus, axis=1).cast(target_dtype).realize()
          wiki_list[k].append(new_value)
    wiki = {}
    for k, v in wiki_list.items():
@@ -42,18 +52,33 @@ def main():
       print(f"{k}: {wiki[k].shape}")
 
    wiki_emb: Tensor = wiki["emb"]
-   wiki_tok: Tensor = wiki["tok"]
+   # wiki_tok: Tensor = wiki["tok"]
 
    @TinyJit
+   def _get_closest_wiki_entry_index(emb:Tensor) -> Tuple[Tensor,Tensor]:
+      sim = cosine_similarity(emb.unsqueeze(1).unsqueeze(1).shard(EMB_GPUS), wiki_emb.unsqueeze(0)).to(Device.DEFAULT).realize()
+      sim = sim.to_(Device.DEFAULT).realize()
+      sim = sim.reshape(emb.shape[0], -1)
+      print(sim.shape)
+      argmax = sim.argmax(axis=-1)
+      print(argmax.shape)
+      return argmax.realize(), sim[:,argmax].mul(Tensor.eye(argmax.shape[0])).sum(axis=-1).realize()
+
    def get_closest_wiki_entry(emb:Tensor) -> Tensor:
-      sim = cosine_similarity(emb.shard(GPUS), wiki_emb).to(wiki_tok.device).realize()
-      sim.to_(wiki_tok.device).realize()
-      return wiki_tok[sim.reshape(emb.shape[0], -1).argmax(axis=-1)].realize()
+      index, sims = _get_closest_wiki_entry_index(emb.realize())
+      index = index.numpy()
+      print(index)
+      print(sims.numpy())
+      toks = []
+      for i in index:
+         i = int(i)
+         toks.append(tok_disktensors[i // ENTRIES_PER_FILE][i % ENTRIES_PER_FILE].to(Device.DEFAULT))
+      return Tensor.stack(*toks).realize()
 
    #####################
    #   Load Fine Web   #
    #####################
-   for i in range(1024):
+   for i in range(1,1024):
       filepath = os.path.join(FINE_WEB_ROOT, make_filename(i))
       if not os.path.exists(filepath):
          break
