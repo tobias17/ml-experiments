@@ -79,14 +79,21 @@ def main():
       fine_web_emb = sd["emb"].to(Device.DEFAULT).realize()
 
       wiki_tokens = []
+      wiki_blocks = []
       for k in tqdm(range(LOAD_SLICES), disable=False):
-         wiki_tokens.append(get_closest_wiki_entry(fine_web_emb[k*LOAD_SIZE:(k+1)*LOAD_SIZE].contiguous().realize()))
+         wiki_blocks.append(get_closest_wiki_entry(fine_web_emb[k*LOAD_SIZE:(k+1)*LOAD_SIZE].contiguous().realize()))
+         if len(wiki_blocks) >= 64:
+            wiki_tokens.append(Tensor.cat(*wiki_blocks).realize())
+            wiki_blocks = []
+      if len(wiki_blocks) > 0:
+         wiki_tokens.append(Tensor.cat(*wiki_blocks).realize())
+         wiki_blocks = []
       data = {
-         "wiki": Tensor.cat(*wiki_tokens),
+         "wiki": Tensor.cat(*wiki_tokens).realize(),
          "tok":  sd["tok"],
       }
       nn.state.safe_save(data, output_filepath)
-      print(f"Saved data wiki[{data['wiki'].shape}] tok[{data['tok'].shape}]")
+      print(f"saved data wiki[{data['wiki'].shape}] tok[{data['tok'].shape}]")
 
 
 if __name__ == "__main__":
