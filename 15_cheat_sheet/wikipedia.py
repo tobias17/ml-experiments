@@ -1,16 +1,15 @@
-from sentence_transformers import SentenceTransformer
-from sentencepiece import SentencePieceProcessor # type: ignore
+
+
 from datasets import load_dataset # type: ignore
 from tqdm import tqdm
 import os, json
 
-from common import split_list_with_overlap
+from common import (
+   split_list_with_overlap, load_tokenizer, load_sentence_model, cosine_similarity, make_filename,
+   BLOCK_SIZE, TARGET_OVERLAP, BLOCKS_PER_BATCH, ENTRIES_PER_FILE,
+)
 
-MAX_BLOCK_SIZE = 512
-BLOCK_OVERLAP  = 32
-
-BLOCKS_PER_BATCH     =  4 * 1024
-MAX_ENTRIES_PER_FILE = 64 * 1024
+DEVICE_ID = 1
 
 OUT_ROOT = "/raid/datasets/wikipedia/sentence-embedding"
 if not os.path.exists(OUT_ROOT):
@@ -28,21 +27,12 @@ def clean_text(text:str) -> str|None:
                mintext = newtext
    return None if len(mintext) == len(text) else mintext
 
-def make_filename(i:int) -> str:
-   return  f"blob_{i:04d}.st"
-
-def load_tokenizer() -> SentencePieceProcessor:
-   return SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
-
-def load_sentence_model() -> SentenceTransformer:
-   return SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device="cuda:1")
-
 
 def create():
    from safetensors.torch import save_file
    import torch
 
-   model = load_sentence_model()
+   model = load_sentence_model(DEVICE_ID)
    tokenizer = load_tokenizer()
 
    ds = load_dataset("wikimedia/wikipedia", "20231101.en")
@@ -52,9 +42,9 @@ def create():
    if os.path.exists(info_file):
       with open(info_file) as f:
          info = json.load(f)
-      assert info["size"] == MAX_ENTRIES_PER_FILE, f'size {info["size"]} != {MAX_ENTRIES_PER_FILE} in cached files'
+      assert info["size"] == ENTRIES_PER_FILE, f'size {info["size"]} != {ENTRIES_PER_FILE} in cached files'
    else:
-      info = { "i":-1, "size":MAX_ENTRIES_PER_FILE, "blobs":[] }
+      info = { "i":-1, "size":ENTRIES_PER_FILE, "blobs":[] }
 
    # print(train_ds.select([20])["title"])
    # return
@@ -80,7 +70,7 @@ def create():
          continue
       
       tokens = tokenizer.Encode(text)
-      chunks = split_list_with_overlap(tokens, MAX_BLOCK_SIZE, BLOCK_OVERLAP)
+      chunks = split_list_with_overlap(tokens, BLOCK_SIZE, TARGET_OVERLAP)
       if chunks is None:
          continue
 
@@ -97,7 +87,7 @@ def create():
             emb += model.encode(blk, convert_to_tensor=True)
             blk = []
 
-            if len(emb) >= MAX_ENTRIES_PER_FILE:
+            if len(emb) >= ENTRIES_PER_FILE:
                filename = make_filename(len(info['blobs']))
                info["i"] = i
                info["blobs"].append(filename)
@@ -122,7 +112,7 @@ def use():
    Device.DEFAULT = "CUDA"
    GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(1,5))
 
-   model = load_sentence_model()
+   model = load_sentence_model(DEVICE_ID)
    tokenizer = load_tokenizer()
 
    data_list = {} # type: ignore
@@ -146,14 +136,6 @@ def use():
    ref = data_cat["emb"]
    tok = data_cat["tok"].numpy()
    print(f"{ref.shape=}")
-
-   def norm(x:Tensor, dim:int=-1, eps:float=1e-8) -> Tensor:
-      return ((x * x).sum(axis=dim, keepdim=True) + eps).sqrt()
-
-   def cosine_similarity(a:Tensor, b:Tensor, dim:int=-1, eps:float=1e-8) -> Tensor:
-      a_norm = a / (norm(a, dim=dim) + eps)
-      b_norm = b / (norm(b, dim=dim) + eps)
-      return Tensor.mul(a_norm, b_norm).sum(axis=dim)
 
    text = "This is the tale, of Captain Jack Sparrow!"
    emb = Tensor(model.encode(text), dtype=dtypes.float16).rearrange('d -> 1 d').shard(GPUS).realize()

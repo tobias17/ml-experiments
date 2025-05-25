@@ -5,24 +5,20 @@ from safetensors.torch import save_file
 from tqdm import tqdm
 import os, json, torch
 
-from common import split_list_with_overlap
+from common import (
+   split_list_with_overlap, load_tokenizer, load_sentence_model, make_filename,
+   BLOCK_SIZE, TARGET_OVERLAP, BLOCKS_PER_BATCH, ENTRIES_PER_FILE,
+)
+
+DEVICE_ID = 2
 
 OUT_ROOT = "/raid/datasets/fineweb/sentence-embedding"
 if not os.path.exists(OUT_ROOT):
    os.makedirs(OUT_ROOT)
 
-BLOCK_SIZE     = 512
-TARGET_OVERLAP = 0
-
-BLOCKS_PER_BATCH     =  4 * 1024
-MAX_ENTRIES_PER_FILE = 64 * 1024
-
-def make_filename(i:int) -> str:
-   return  f"blob_{i:04d}.st"
-
 def main():
-   model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device="cuda:2")
-   tokenizer = SentencePieceProcessor(model_file="/raid/downloads/LLaMA-2/7B/tokenizer.model")
+   model = load_sentence_model(DEVICE_ID)
+   tokenizer = load_tokenizer()
    dataset = load_dataset(path="/raid/datasets/fineweb/slim")
    split_dataset = dataset["train"].train_test_split(test_size=0.0001, seed=1337, shuffle=True)
 
@@ -30,9 +26,9 @@ def main():
    if os.path.exists(info_file):
       with open(info_file) as f:
          info = json.load(f)
-      assert info["size"] == MAX_ENTRIES_PER_FILE, f'size {info["size"]} != {MAX_ENTRIES_PER_FILE} in cached files'
+      assert info["size"] == ENTRIES_PER_FILE, f'size {info["size"]} != {ENTRIES_PER_FILE} in cached files'
    else:
-      info = { "i":-1, "size":MAX_ENTRIES_PER_FILE, "blobs":[] }
+      info = { "i":-1, "size":ENTRIES_PER_FILE, "blobs":[] }
 
    toks = []
    blks = []
@@ -65,7 +61,7 @@ def main():
             embs += model.encode(blks, convert_to_tensor=True)
             blks = []
 
-            if len(embs) >= MAX_ENTRIES_PER_FILE:
+            if len(embs) >= ENTRIES_PER_FILE:
                filename = make_filename(len(info['blobs']))
                info["i"] = i
                info["blobs"].append(filename)
