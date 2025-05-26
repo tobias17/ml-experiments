@@ -9,7 +9,7 @@ ENTRIES_PER_FILE = 64 * 1024
 
 from tinygrad import Tensor
 from typing import List
-import math
+import math, os
 
 from sentencepiece import SentencePieceProcessor # type: ignore
 def load_tokenizer() -> SentencePieceProcessor:
@@ -55,6 +55,12 @@ def split_list_with_overlap(input_list:List, block_size:int, target_overlap:int)
       result.append(input_list[s:s+block_size])
 
    return result
+
+def get_latest_folder(archive:bool=False) -> str:
+   root = f"weights/{os.path.basename(os.path.dirname(__file__))}" if not archive else f"archive/{os.path.basename(os.path.dirname(os.path.dirname(__file__)))}"
+   last_folders = [f"{root}/{f}" for f in os.listdir(root)]
+   last_folder = max([f for f in last_folders if os.path.isdir(f)], key=os.path.getmtime)
+   return last_folder
 
 if __name__ == "__main__":
    res = split_list_with_overlap(list(range(1,1001)), block_size=64, target_overlap=8)
