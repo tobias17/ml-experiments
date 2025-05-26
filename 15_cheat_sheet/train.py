@@ -67,15 +67,15 @@ class DataLoader:
       return ret("tok"), ret("wiki")
 
 
-BS = 4
-LR = 2**-18
+BS = 8
+LR = 2**-16
 
-TRAIN_BREAM   = 2
+TRAIN_BREAM   = 20
 AVERAGE_EVERY = 500
 GRAPH_EVERY   = 500
-SAVE_EVERY    = 4000
+SAVE_EVERY    = 5000
 
-MAX_DATASET_ENTRIES = 3_000_000
+MAX_DATASET_ENTRIES = 5_900_000
 
 
 def train(restore:str|None=None, keep_all_weights:bool=False):
@@ -103,7 +103,7 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
    for i, (name, model) in enumerate(models.items()):
       params = nn.state.get_parameters(model)
       for p in params:
-         p.to_(f"{Device.DEFAULT}:{i}")
+         p.shard_((f"{Device.DEFAULT}:{i*2}", f"{Device.DEFAULT}:{i*2+1}"))
       optims[name] = nn.optim.AdamW(params, lr=LR, eps=1e-7)
 
    @TinyJit
@@ -111,7 +111,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
       losses: Dict[str,Tensor] = {}
       accs:   Dict[str,Tensor] = {}
       for k, model in models.items():
-         dev_tok, dev_ctx = tok.to(model.device), ctx.to(model.device)
+         dev_tok = tok.to(model.device) if isinstance(model.device, str) else tok.shard(model.device, axis=0)
+         dev_ctx = ctx.to(model.device) if isinstance(model.device, str) else ctx.shard(model.device, axis=0)
          logits = model(dev_tok[:,:-1], dev_ctx if model.cross_attn else None)
          y = dev_tok[:,1:]
          optims[k].zero_grad()
@@ -168,6 +169,7 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
                      max_95th = max(max_95th, np.percentile(ys[label], 95))
                   plt.plot(xs[label], ys[label], label=label)
                plt.ylim((0, max_95th*1.2 if ymax is None else ymax))
+               plt.xlim((0,None))
                plt.title(title)
                plt.legend()
                figure = plt.gcf()
@@ -175,26 +177,28 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
                if not os.path.exists(weights_folder): os.makedirs(weights_folder)
                plt.savefig(os.path.join(weights_folder, f"graph_{title.lower()}.png"), dpi=100)
             plot(data.train_losses, "Loss")
-            plot(data.train_losses, "Acc", 1.0)
-         
+            plot(data.train_accs,   "Acc", ymax=1.0)
+
          if data.step_i > 0 and data.step_i % SAVE_EVERY == 0:
             # Save All of the Models Weights
             new_weight_files = {}
-            if not os.path.exists(weights_folder): os.makedirs(weights_folder)
+            if not os.path.exists(weights_folder):
+               os.makedirs(weights_folder)
             for key in models.keys():
-               new_weight_files[key] = os.path.join(weights_folder, f"model_{data.step_i//1000:04d}k_{key}.st")
+               new_weight_files[key] = os.path.join(weights_folder, f"model_{data.step_i:04d}k_{key}.st")
                nn.state.safe_save(nn.state.get_state_dict(models[key]), new_weight_files[key])
-            
+
             # Potentially Purge the Last Weights Saved
             if not keep_all_weights:
-               for path in data.last_weight_files:
+               for path in data.last_weight_files.values():
                   if path in new_weight_files.values():
                      print("WARNING: weights overwrote themselves, skipping purge step")
                   else:
+                     print(f"Saving {path}")
                      try: os.remove(path)
                      except Exception as ex: print(f"WARNING: ran into error deleting old weights file, {ex}")
-               data.last_weight_files = new_weight_files
-            
+            data.last_weight_files = new_weight_files
+
             # Save a Data Json
             with open(os.path.join(weights_folder, f"data.json"), "w") as f:
                json.dump(data.to_json(), f)
