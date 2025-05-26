@@ -84,10 +84,11 @@ class Model:
       self.pos_emb = nn.Embedding(cfg.ctx_length, cfg.dim)
       self.layers = [TransformerBlock(cfg) for _ in range(cfg.n_layers)]
       self.proj_out = nn.Linear(cfg.dim, cfg.vocab_size)
+      self.cross_attn = cfg.cross_attn
    def __call__(self, tok:Tensor, ctx:Tensor|None) -> Tensor:
-      x = self.tok_emb(tok) + self.pos_emb(Tensor.arange(tok.shape[-1]))
-      z = self.tok_emb(ctx) + self.pos_emb(Tensor.arange(ctx.shape[-1])) if (ctx is not None) else None
-      for layer in self.layers:
+      x = self.tok_emb(tok) + self.pos_emb(Tensor.arange(tok.shape[-1], device=tok.device))
+      z = self.tok_emb(ctx) + self.pos_emb(Tensor.arange(ctx.shape[-1], device=tok.device)) if (ctx is not None) else None
+      for i, layer in enumerate(self.layers):
          x, z = layer(x, z)
       return self.proj_out(x)
    @property
