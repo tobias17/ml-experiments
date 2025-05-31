@@ -193,7 +193,7 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
             if not os.path.exists(weights_folder):
                os.makedirs(weights_folder)
             for key in models.keys():
-               new_weight_files[key] = os.path.join(weights_folder, f"model_{data.step_i:04d}k_{key}.st")
+               new_weight_files[key] = os.path.join(weights_folder, f"model_{data.step_i//1000:04d}k_{key}.st")
                nn.state.safe_save(nn.state.get_state_dict(models[key]), new_weight_files[key])
 
             # Potentially Purge the Last Weights Saved
