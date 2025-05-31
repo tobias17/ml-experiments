@@ -2,18 +2,18 @@ from tinygrad import Tensor, nn, dtypes, TinyJit, Context, Device
 from tinygrad.helpers import prod
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Tuple
-import os, json, datetime, time
+import os, json, datetime, time, math
 import matplotlib.pyplot as plt # type: ignore
 import numpy as np
 
-from util import compress
+from util import compress, fmt_digits, fmt_percent, fmt_time
 from model import ModelConfig, Model
-from common import make_filename, ENTRIES_PER_FILE
+from common import make_filename, loglerp, ENTRIES_PER_FILE
 
 
-BASELINE_SMALL = ModelConfig(cross_attn=False, n_layers=20)
-CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=20)
-BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=32)
+BASELINE_SMALL = ModelConfig(cross_attn=False, n_layers=16)
+CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=16)
+BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=24, ff_mult=6.0)
 
 
 @dataclass
@@ -62,27 +62,27 @@ class DataLoader:
       entry_index = index %  ENTRIES_PER_FILE
       assert entry_index + amount <= ENTRIES_PER_FILE, f"Requested {index=} and {amount=} which overlaps pages, {entry_index} + {amount} > {ENTRIES_PER_FILE}"
       page = self.entries[page_index]
-      def ret(key:str) -> Tensor:
+      def process(key:str) -> Tensor:
          return page[key][entry_index:entry_index+amount].contiguous().to(Device.DEFAULT).realize()
-      return ret("tok"), ret("wiki")
+      return process("tok"), process("wiki")
 
 
-BS = 8
-LR = 2**-16
+BS = 4
+LR_A = 2**-13
+LR_B = 2**-17
 
-TRAIN_BREAM   = 20
 AVERAGE_EVERY = 500
 GRAPH_EVERY   = 500
 SAVE_EVERY    = 5000
 
-MAX_DATASET_ENTRIES = 5_900_000
+MAX_DATASET_ENTRIES = 8_900_000
 
 
 def train(restore:str|None=None, keep_all_weights:bool=False):
    Tensor.no_grad = False
 
    data_loader = DataLoader()
-   print(f"\nMax dataset index: {data_loader.max_index}")
+   print(f"\nMax dataset index: {data_loader.max_index}\nMax dataset entry: {MAX_DATASET_ENTRIES}")
    models = get_models(print_params=True)
 
    if restore is not None:
@@ -104,7 +104,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
       params = nn.state.get_parameters(model)
       for p in params:
          p.shard_((f"{Device.DEFAULT}:{i*2}", f"{Device.DEFAULT}:{i*2+1}"))
-      optims[name] = nn.optim.AdamW(params, lr=LR, eps=1e-7)
+         # p.to_(f"{Device.DEFAULT}:{i+2}")
+      optims[name] = nn.optim.AdamW(params, lr=LR_A, eps=1e-6)
 
    @TinyJit
    def train_step(tok:Tensor, ctx:Tensor) -> Tuple[Dict[str,Tensor],Dict[str,Tensor]]:
@@ -133,21 +134,28 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
          if data.dataset_i >= MAX_DATASET_ENTRIES:
             print(f"Trained on {data.dataset_i} tokens")
 
+         # Set the optim LR for decaying items
+         new_lr = loglerp(LR_A, LR_B, data.dataset_i / MAX_DATASET_ENTRIES)
+         for o in optims.values():
+            o.lr.assign(Tensor([new_lr], device=o.lr.device))
+
          # Perform Training Step
          tok, ctx = data_loader.get(data.dataset_i, BS)
-         with Context(BEAM=TRAIN_BREAM):
-            loss, acc = train_step(tok.realize(), ctx.realize())
-            loss_vs.append({ k:l.item() for k,l in loss.items()})
-            acc_vs .append({ k:a.item() for k,a in acc .items()})
+         loss, acc = train_step(tok.realize(), ctx.realize())
+         loss_vs.append({ k:l.item() for k,l in loss.items()})
+         acc_vs .append({ k:a.item() for k,a in acc .items()})
 
          # Increment Counters
          data.step_i += 1
          data.dataset_i += BS
-         print(
-            f"{data.step_i: 10d} | Dataset {100.0*min(1.0,data.dataset_i/MAX_DATASET_ENTRIES):.2f}% | {1000.0*(time.perf_counter()-start_time):.0f} ms" +
-            " | Train Loss " + " - ".join(f"{l:.4f}" for l in loss_vs[-1].values()) +
-            " | Train Acc "  + " - ".join(f"{100.0*a:.2f}%" for a in acc_vs[-1].values())
-         )
+         print(" | ".join([
+            f"{data.step_i: 9d}",
+            "Dataset: " + fmt_percent(data.dataset_i/MAX_DATASET_ENTRIES),
+            fmt_time(time.perf_counter()-start_time,4),
+            "Train Loss: " + " - ".join(fmt_digits(l,5) for l in loss_vs[-1].values()),
+            "Train Acc: "  + " - ".join(fmt_percent(a)  for a in acc_vs [-1].values()),
+            f"LR: {math.log2(new_lr):.3f}",
+         ]))
 
          # Average the Loss Data
          if data.step_i > 0 and data.step_i % AVERAGE_EVERY == 0:

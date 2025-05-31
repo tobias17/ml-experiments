@@ -71,6 +71,26 @@ def compress(x:float, labels:List[str], step:int=1000, fmt=shrink_format) -> str
       x /= step
       i += 1
 
+def fmt_digits(x:float, digits:int) -> str:
+   r = f"{x:.8f}"
+   if len(r.split(".", 1)[0]) == digits-1:
+      return " " + r[:digits-1]
+   return r[:digits]
+
+def fmt_time(x:float, digits:int=5) -> str:
+   if x > 3600*10:
+      v, u = x/3600, "hr"
+   elif x > 60*10:
+      v, u = x/60, "mn"
+   elif x > 1*10:
+      v, u = x, "s"
+   else:
+      v, u = x*1000, "ms"
+   return f"{fmt_digits(v, digits)} {u}" + " "*(2-len(u))
+
+def fmt_percent(x:float, digits:int=4) -> str:
+   return fmt_digits(x*100, digits) + "%"
+
 if __name__ == "__main__":
    for v in [1, 500, 1000, 2000, 20000, 200000, 2000000, 20000000]:
       print(compress(v, ["k", "m", "b"]))

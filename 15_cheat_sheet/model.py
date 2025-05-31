@@ -13,11 +13,11 @@ class ModelConfig:
 
    cross_attn: bool = False
 
-   n_heads: int = 16
+   n_heads: int = 24
    @property
    def head_d(self) -> int: return self.dim // self.n_heads
 
-   ff_mult: float = 4.0
+   ff_mult: float = 3.0
    @property
    def ff_dim(self) -> int: return int(self.dim * self.ff_mult)
    @property
@@ -68,14 +68,16 @@ class TransformerBlock:
       self.x_attn     = SelfAttention(cfg)
       self.z_attn     = SelfAttention(cfg, is_causal=False) if cfg.cross_attn else None
       self.cross_attn = CrossAttention(cfg) if cfg.cross_attn else None
-      self.ff         = FeedForward(cfg)
+      self.x_ff       = FeedForward(cfg)
+      self.z_ff       = FeedForward(cfg) if cfg.cross_attn else None
    def __call__(self, x:Tensor, z:Tensor|None) -> Tuple[Tensor,Tensor|None]:
       x = self.x_attn(x)
-      if (self.z_attn is not None) and (self.cross_attn is not None):
+      if (self.z_attn is not None) and (self.cross_attn is not None) and (self.z_ff is not None):
          assert z is not None
          z = self.z_attn(z)
+         z = self.z_ff(z)
          x = self.cross_attn(x, z)
-      x = self.ff(x)
+      x = self.x_ff(x)
       return x, z
 
 class Model:
@@ -94,5 +96,3 @@ class Model:
    @property
    def device(self) -> str|Tuple[str,...]:
       return self.tok_emb.weight.device
-
-

@@ -19,6 +19,13 @@ from sentence_transformers import SentenceTransformer
 def load_sentence_model(i:int=0) -> SentenceTransformer:
    return SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device=f"cuda:{i}")
 
+def loglerp(a:float, b:float, t:float) -> float:
+   t = max(0.0, min(1.0, t))
+   ea = math.log2(a)
+   eb = math.log2(b)
+   e = (1 - t) * ea + t * eb
+   return 2 ** e
+
 def norm(x:Tensor, dim:int=-1, eps:float=1e-8) -> Tensor:
    return ((x * x).sum(axis=dim, keepdim=True) + eps).sqrt()
 
@@ -63,7 +70,14 @@ def get_latest_folder(archive:bool=False) -> str:
    return last_folder
 
 if __name__ == "__main__":
-   res = split_list_with_overlap(list(range(1,1001)), block_size=64, target_overlap=8)
-   assert res is not None
-   for r in res:
-      print(r, "\n")
+   print(2**-2)
+   print(2**-6)
+   print()
+   print(loglerp(2**-2, 2**-6, 0.0))
+   print(loglerp(2**-2, 2**-6, 0.5))
+   print(loglerp(2**-2, 2**-6, 1.0))
+
+   # res = split_list_with_overlap(list(range(1,1001)), block_size=64, target_overlap=8)
+   # assert res is not None
+   # for r in res:
+   #    print(r, "\n")
