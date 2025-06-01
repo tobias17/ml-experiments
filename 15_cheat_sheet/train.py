@@ -1,4 +1,4 @@
-from tinygrad import Tensor, nn, dtypes, TinyJit, Context, Device
+from tinygrad import Tensor, nn, dtypes, TinyJit, Device
 from tinygrad.helpers import prod
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Tuple
@@ -68,7 +68,7 @@ class DataLoader:
 
 
 BS = 4
-LR_A = 2**-13
+LR_A = 2**-14
 LR_B = 2**-17
 
 AVERAGE_EVERY = 500
@@ -105,7 +105,7 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
       for p in params:
          p.shard_((f"{Device.DEFAULT}:{i*2}", f"{Device.DEFAULT}:{i*2+1}"))
          # p.to_(f"{Device.DEFAULT}:{i+2}")
-      optims[name] = nn.optim.AdamW(params, lr=LR_A, eps=1e-6)
+      optims[name] = nn.optim.AdamW(params, lr=LR_A, eps=1e-5)
 
    @TinyJit
    def train_step(tok:Tensor, ctx:Tensor) -> Tuple[Dict[str,Tensor],Dict[str,Tensor]]:
