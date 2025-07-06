@@ -11,12 +11,8 @@ from model import ModelConfig, Model
 from common import make_filename, loglerp, load_tokenizer, ENTRIES_PER_FILE, BLOCK_SIZE
 
 
-BASELINE_SMALL = ModelConfig(cross_attn=False, n_layers=16)
 CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=16)
 BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=24, ff_mult=6.0)
-
-CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=4, ff_mult=2.0)
-BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=6, ff_mult=3.0)
 
 
 @dataclass
@@ -48,6 +44,7 @@ def get_models(print_params:bool=True) -> Dict[str,Model]:
 
    return models
 
+
 DATASET_ROOT = "/raid/datasets/fineweb/with-wiki-top1"
 class DataLoader:
    def __init__(self):
@@ -70,22 +67,17 @@ class DataLoader:
       return process("tok"), process("wiki")
 
 
-BS   = 1
+BS   = 2
 LR_A = 2**-14
 LR_B = 2**-17
 
-# AVERAGE_EVERY = 500
-# GRAPH_EVERY   = 500
-# EVAL_EVERY    = 5000
-# SAVE_EVERY    = 5000
-
-AVERAGE_EVERY = 5
-GRAPH_EVERY   = 5
-EVAL_EVERY    = 1000
-SAVE_EVERY    = 2000
+AVERAGE_EVERY = 500
+GRAPH_EVERY   = 500
+EVAL_EVERY    = 10000
+SAVE_EVERY    = 10000
 
 MAX_DATASET_ENTRIES = 8_900_000
-EVAL_GEN_AMOUNT     = 32
+EVAL_GEN_AMOUNT     = 24
 
 
 def train(restore:str|None=None, keep_all_weights:bool=False):
@@ -121,8 +113,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
    for i, (name, model) in enumerate(models.items()):
       params = nn.state.get_parameters(model)
       for p in params:
-         # p.shard_((f"{Device.DEFAULT}:{i*2}", f"{Device.DEFAULT}:{i*2+1}"))
-         p.to_(f"{Device.DEFAULT}:{i}")
+         p.shard_((f"{Device.DEFAULT}:{i*2+1}", f"{Device.DEFAULT}:{i*2+2}"))
+         # p.to_(f"{Device.DEFAULT}:{i}")
       optims[name] = nn.optim.AdamW(params, lr=LR_A, eps=1e-5)
 
    @TinyJit
@@ -141,8 +133,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
       return losses, accs
 
    def eval_step(model:Model, tok:Tensor, ctx:Tensor) -> Tensor:
-      dev_tok = tok.to(model.device) if isinstance(model.device, str) else tok.shard(model.device, axis=0)
-      dev_ctx = ctx.to(model.device) if isinstance(model.device, str) else ctx.shard(model.device, axis=0)
+      dev_tok = tok.to(model.device) if isinstance(model.device, str) else tok.shard(model.device, axis=None)
+      dev_ctx = ctx.to(model.device) if isinstance(model.device, str) else ctx.shard(model.device, axis=None)
       return model(dev_tok[:,:-1], dev_ctx if model.cross_attn else None).realize()
    eval_steps = { k: TinyJit(eval_step) for k in models.keys() }
    def run_evals() -> Dict[str,List[Dict[str,str]]]:

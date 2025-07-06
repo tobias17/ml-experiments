@@ -7,13 +7,13 @@ from util import compress
 @dataclass
 class ModelConfig:
    n_layers: int = 20
-   dim: int = 768
+   dim: int = 1024
    vocab_size: int = 32000
    ctx_length: int = 512
 
    cross_attn: bool = False
 
-   n_heads: int = 24
+   n_heads: int = 32
    @property
    def head_d(self) -> int: return self.dim // self.n_heads
 
