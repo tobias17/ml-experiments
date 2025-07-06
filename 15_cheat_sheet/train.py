@@ -8,7 +8,7 @@ import numpy as np
 
 from util import compress, fmt_digits, fmt_percent, fmt_time
 from model import ModelConfig, Model
-from common import make_filename, loglerp, load_tokenizer, ENTRIES_PER_FILE
+from common import make_filename, loglerp, load_tokenizer, ENTRIES_PER_FILE, BLOCK_SIZE
 
 
 BASELINE_SMALL = ModelConfig(cross_attn=False, n_layers=16)
@@ -74,11 +74,15 @@ BS   = 1
 LR_A = 2**-14
 LR_B = 2**-17
 
-AVERAGE_EVERY = 500
-GRAPH_EVERY   = 500
-TEST_EVERY    = 10
-EVAL_EVERY    = 1
-SAVE_EVERY    = 5000
+# AVERAGE_EVERY = 500
+# GRAPH_EVERY   = 500
+# EVAL_EVERY    = 5000
+# SAVE_EVERY    = 5000
+
+AVERAGE_EVERY = 5
+GRAPH_EVERY   = 5
+EVAL_EVERY    = 1000
+SAVE_EVERY    = 2000
 
 MAX_DATASET_ENTRIES = 8_900_000
 EVAL_GEN_AMOUNT     = 32
@@ -88,7 +92,7 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
    Tensor.no_grad = False
 
    data_loader = DataLoader()
-   print(f"\nMax dataset size: {data_loader.max_index}\nMax dataset usage: {MAX_DATASET_ENTRIES}")
+   print(f"\nMax dataset size : {data_loader.max_index}\nMax dataset usage: {MAX_DATASET_ENTRIES}")
 
    with open(os.path.join(DATASET_ROOT, "eval.json")) as f:
       eval_text = json.load(f)
@@ -133,19 +137,6 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
          optims[k].zero_grad()
          losses[k] = logits.sparse_categorical_crossentropy(y).backward()
          optims[k].step()
-         accs[k] = Tensor.cast(logits.argmax(-1) == y, dtypes.float32).mean().realize()
-      return losses, accs
-
-   @TinyJit
-   def test_step(tok:Tensor, ctx:Tensor) -> Tuple[Dict[str,Tensor],Dict[str,Tensor]]:
-      losses: Dict[str,Tensor] = {}
-      accs:   Dict[str,Tensor] = {}
-      for k, model in models.items():
-         dev_tok = tok.to(model.device) if isinstance(model.device, str) else tok.shard(model.device, axis=0)
-         dev_ctx = ctx.to(model.device) if isinstance(model.device, str) else ctx.shard(model.device, axis=0)
-         logits = model(dev_tok[:,:-1], dev_ctx if model.cross_attn else None)
-         y = dev_tok[:,1:]
-         losses[k] = logits.sparse_categorical_crossentropy(y)
          accs[k] = Tensor.cast(logits.argmax(-1) == y, dtypes.float32).mean().realize()
       return losses, accs
 
@@ -225,25 +216,36 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
 
       # Create the Plots
       if data.step_i > 0 and data.step_i % GRAPH_EVERY == 0:
-         def plot(items, title:str, ymax:float|None=None):
-            xs, ys = {}, {}
-            for name in models.keys():
-               xs[name] = (np.arange(len(items[name]))+1)*AVERAGE_EVERY*BS
-               ys[name] = np.array(items[name])
-            plt.clf()
-            max_95th = 0.0
-            for label in xs.keys():
-               if ymax is None:
-                  max_95th = max(max_95th, np.percentile(ys[label], 95))
-               plt.plot(xs[label], ys[label], label=label)
-            plt.ylim((0, max_95th*1.2 if ymax is None else ymax))
-            plt.xlim((0,None))
-            plt.title(title)
-            plt.legend()
-            figure = plt.gcf()
-            figure.set_size_inches(18, 10)
-            if not os.path.exists(weights_folder): os.makedirs(weights_folder)
-            plt.savefig(os.path.join(weights_folder, f"graph_{title.lower()}.png"), dpi=100)
+         def plot(items, orig_title:str, ymax:float|None=None):
+            for is_delta in [False, True]:
+               title = f"{orig_title} {'Delta' if is_delta else 'All'}"
+               ylabel = orig_title
+               if is_delta:
+                  ylabel += " (cheat_sheet - baseline_large)"
+               xs, ys = {}, {}
+               for name in models.keys():
+                  xs[name] = (np.arange(len(items[name]))+1)*AVERAGE_EVERY*BS*BLOCK_SIZE / 1_000_000.0
+                  ys[name] = np.array(items[name])
+               if is_delta:
+                  xs = { "delta": xs["cheat_sheet"] }
+                  ys = { "delta": ys["cheat_sheet"] - ys["baseline_large"] }
+               plt.clf()
+               max_95th = 0.0
+               for label in xs.keys():
+                  if ymax is None:
+                     max_95th = max(max_95th, np.percentile(ys[label], 95))
+                  plt.plot(xs[label], ys[label], label=label)
+               if not is_delta:
+                  plt.ylim((0, max_95th*1.2 if ymax is None else ymax))
+               plt.xlim((0,None))
+               plt.xlabel("Tokens (Millions)")
+               plt.ylabel(ylabel)
+               plt.title(title)
+               plt.legend()
+               figure = plt.gcf()
+               figure.set_size_inches(18, 10)
+               if not os.path.exists(weights_folder): os.makedirs(weights_folder)
+               plt.savefig(os.path.join(weights_folder, f"graph_{title.lower().replace(' ','_')}.png"), dpi=100)
          plot(data.train_losses, "Loss")
          plot(data.train_accs,   "Acc", ymax=1.0)
 

@@ -127,7 +127,7 @@ def main():
          wiki_tokens = []
          wiki_blocks = []
          for k in tqdm(range(LOAD_SLICES), disable=False):
-            wiki_blocks.append(get_closest_wiki_entry(fine_web_emb[k*LOAD_SIZE:(k+1)*LOAD_SIZE].contiguous().realize()))
+            wiki_blocks.append(get_closest_wiki_entry(fine_web_emb[k*LOAD_SIZE:(k+1)*LOAD_SIZE].contiguous().realize())) # type: ignore
             if len(wiki_blocks) >= 64:
                wiki_tokens.append(Tensor.cat(*wiki_blocks).realize())
                wiki_blocks = []
