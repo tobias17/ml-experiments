@@ -1,5 +1,5 @@
 from tinygrad import Tensor, TinyJit, dtypes, nn
-from typing import List, Tuple
+from typing import Tuple, Dict
 from tinygrad.helpers import prod
 from dataclasses import dataclass
 from util import compress
@@ -10,6 +10,8 @@ class ModelConfig:
    dim: int = 1024
    vocab_size: int = 32000
    ctx_length: int = 512
+   norm_eps: float = 1e-5
+   rope_theta: float = 500000
 
    cross_attn: bool = False
 
@@ -17,38 +19,80 @@ class ModelConfig:
    @property
    def head_d(self) -> int: return self.dim // self.n_heads
 
+   n_kv_heads: int = 8
+   @property
+   def n_rep(self) -> int: return self.n_heads // self.n_kv_heads
+
    ff_mult: float = 3.0
    @property
    def ff_dim(self) -> int: return int(self.dim * self.ff_mult)
    @property
-   def ff_act(self): return Tensor.leaky_relu
+   def ff_act(self): return Tensor.silu
 
-class SelfAttention:
-   def __init__(self, cfg:ModelConfig, is_causal:bool=True):
-      self.proj_in   = nn.Linear(cfg.dim, cfg.dim*3)
+   def validate(self):
+      assert self.head_d * self.n_heads == self.dim
+      assert self.n_rep * self.n_kv_heads == self.n_heads
+
+# https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47
+class FreqCis:
+   _cache: Dict[Tuple[int,int,float],Tensor] = {}
+   @staticmethod
+   def get(dim:int, end:int, theta:float) -> Tensor:
+      key = (dim,end,theta)
+      value = FreqCis._cache.get(key)
+      if value is None:
+         freqs = 1.0 / (theta ** (Tensor.arange(0, dim, 2)[:(dim // 2)] / dim))
+         freqs = Tensor.arange(end).unsqueeze(dim=1) * freqs.unsqueeze(dim=0)
+         value = Tensor.stack(freqs.cos(), freqs.sin(), dim=-1).reshape(1, end, 1, dim//2, 2)
+         FreqCis._cache[key] = value
+      return value
+
+# matches meta, non hugging face weights
+# (a+i*b) * (c+i*d) = (ac-bd) + i*(ad+bc)
+def complex_mult(A, c, d):
+   a,b = A[..., 0:1], A[..., 1:2]
+   ro = a*c - b*d
+   co = a*d + b*c
+   return ro.cat(co, dim=-1)
+
+def apply_rotary_emb(xq:Tensor, xk:Tensor, freqs_cis:Tensor) -> tuple[Tensor, Tensor]:
+   assert freqs_cis.shape[1] == xq.shape[1] == xk.shape[1], f"freqs_cis shape mismatch {freqs_cis.shape} xq:{xq.shape} xk:{xk.shape}"
+   xq = xq.reshape(*xq.shape[0:-1], -1, 2)
+   xk = xk.reshape(*xk.shape[0:-1], -1, 2)
+   assert len(xq.shape) == len(xk.shape) == len(freqs_cis.shape) == 5
+   c, d = freqs_cis[..., 0:1], freqs_cis[..., 1:2]
+   xq_out = complex_mult(xq, c, d)
+   xk_out = complex_mult(xk, c, d)
+   return xq_out.flatten(3), xk_out.flatten(3)
+
+class Attention:
+   def __init__(self, cfg:ModelConfig, is_causal:bool=True, cross_attn:bool=False):
+      self.pre_norm_x = nn.RMSNorm(cfg.dim, cfg.norm_eps)
+      self.pre_norm_z = nn.RMSNorm(cfg.dim, cfg.norm_eps) if cross_attn else None
+      self.proj_q    = nn.Linear(cfg.dim, cfg.dim)
+      self.proj_kv   = nn.Linear(cfg.dim, 2*cfg.n_kv_heads*cfg.head_d)
       self.proj_out  = nn.Linear(cfg.dim, cfg.dim)
-      self.n_heads   = cfg.n_heads
-      self.head_d    = cfg.head_d
       self.is_causal = is_causal
-   def __call__(self, x:Tensor) -> Tensor:
-      q,k,v = self.proj_in(x).chunk(3, dim=-1)
-      q,k,v = [y.rearrange('b c (h d) -> b h c d', h=self.n_heads, d=self.head_d) for y in (q,k,v)]
-      h = Tensor.scaled_dot_product_attention(q, k, v, is_causal=self.is_causal)
-      h = h.rearrange('b h c d -> b c (h d)')
-      return x + self.proj_out(h)
+      self.n_rep = cfg.n_rep
+      self.rara  = { "h":cfg.n_heads, "kvh":cfg.n_kv_heads, "d":cfg.head_d }
+   def __call__(self, x:Tensor, freqs_cis:Tensor, z:Tensor|None=None) -> Tensor:
+      x = self.pre_norm_x(x)
+      z = x if z is None else self.pre_norm_z(z) # type: ignore
 
-class CrossAttention:
-   def __init__(self, cfg:ModelConfig):
-      self.proj_q   = nn.Linear(cfg.dim, cfg.dim)
-      self.proj_kv  = nn.Linear(cfg.dim, cfg.dim*2)
-      self.proj_out = nn.Linear(cfg.dim, cfg.dim)
-      self.n_heads  = cfg.n_heads
-      self.head_d   = cfg.head_d
-   def __call__(self, x:Tensor, z:Tensor) -> Tensor:
-      q   = self.proj_q(x)
+      q = self.proj_q(x)
       k,v = self.proj_kv(z).chunk(2, dim=-1)
-      q,k,v = [y.rearrange('b c (h d) -> b h c d', h=self.n_heads, d=self.head_d) for y in (q,k,v)]
-      h = Tensor.scaled_dot_product_attention(q, k, v, is_causal=False)
+
+      q,k = apply_rotary_emb(q, k, freqs_cis)
+
+      q = q.rearrange('b c (h d) -> b h c d', **self.rara)
+      k,v = [
+         y.rearrange('b c (kvh d) -> b c kvh d', **self.rara)
+          .repeat((1, 1, 1, self.n_rep))
+          .rearrange('b c kvh (r d) -> b (kvh r) c d', **self.rara)
+         for y in (k,v)
+      ]
+
+      h = Tensor.scaled_dot_product_attention(q, k, v, is_causal=self.is_causal)
       h = h.rearrange('b h c d -> b c (h d)')
       return x + self.proj_out(h)
 
@@ -65,33 +109,32 @@ class FeedForward:
 
 class TransformerBlock:
    def __init__(self, cfg:ModelConfig):
-      self.x_attn     = SelfAttention(cfg)
-      self.z_attn     = SelfAttention(cfg, is_causal=False) if cfg.cross_attn else None
-      self.cross_attn = CrossAttention(cfg) if cfg.cross_attn else None
+      self.x_attn     = Attention(cfg)
+      self.z_attn     = Attention(cfg, is_causal=False) if cfg.cross_attn else None
+      self.cross_attn = Attention(cfg, cross_attn=True) if cfg.cross_attn else None
       self.x_ff       = FeedForward(cfg)
       self.z_ff       = FeedForward(cfg) if cfg.cross_attn else None
-   def __call__(self, x:Tensor, z:Tensor|None) -> Tuple[Tensor,Tensor|None]:
-      x = self.x_attn(x)
-      if (self.z_attn is not None) and (self.cross_attn is not None) and (self.z_ff is not None):
-         assert z is not None
-         z = self.z_attn(z)
-         z = self.z_ff(z)
-         x = self.cross_attn(x, z)
+   def __call__(self, x:Tensor, freqs_cis:Tensor, z:Tensor|None) -> Tuple[Tensor,Tensor|None]:
+      x = self.x_attn(x, freqs_cis)
+      if self.cross_attn is not None:
+         z = self.z_ff(self.z_attn(z, freqs_cis)) # type: ignore
+         x = self.cross_attn(x, freqs_cis, z)
       x = self.x_ff(x)
       return x, z
 
 class Model:
    def __init__(self, cfg:ModelConfig):
       self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.dim)
-      self.pos_emb = nn.Embedding(cfg.ctx_length, cfg.dim)
       self.layers = [TransformerBlock(cfg) for _ in range(cfg.n_layers)]
       self.proj_out = nn.Linear(cfg.dim, cfg.vocab_size)
       self.cross_attn = cfg.cross_attn
+      self.freqs_cis_args = (cfg.head_d, cfg.ctx_length*2, cfg.rope_theta)
    def __call__(self, tok:Tensor, ctx:Tensor|None) -> Tensor:
-      x = self.tok_emb(tok) + self.pos_emb(Tensor.arange(tok.shape[-1], device=tok.device))
-      z = self.tok_emb(ctx) + self.pos_emb(Tensor.arange(ctx.shape[-1], device=tok.device)) if (ctx is not None) else None
-      for i, layer in enumerate(self.layers):
-         x, z = layer(x, z)
+      x = self.tok_emb(tok)
+      z = self.tok_emb(ctx) if (ctx is not None) else None
+      freqs_cis = FreqCis.get(*self.freqs_cis_args).cast(x.dtype)
+      for layer in self.layers:
+         x, z = layer(x, freqs_cis, z)
       return self.proj_out(x)
    @property
    def device(self) -> str|Tuple[str,...]:
