@@ -219,8 +219,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
                   xs[name] = (np.arange(len(items[name]))+1)*AVERAGE_EVERY*BS*BLOCK_SIZE / 1_000_000.0
                   ys[name] = np.array(items[name])
                if is_delta:
-                  xs = { "delta": xs["cheat_sheet"] }
-                  ys = { "delta": ys["cheat_sheet"] - ys["baseline_large"] }
+                  xs = { "zero": [min(xs["cheat_sheet"]), max(xs["cheat_sheet"])], "delta": xs["cheat_sheet"] }
+                  ys = { "zero": [0,                      0                     ], "delta": ys["cheat_sheet"] - ys["baseline_large"] }
                plt.clf()
                max_95th = 0.0
                for label in xs.keys():
