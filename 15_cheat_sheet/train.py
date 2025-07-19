@@ -205,6 +205,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
          for k in models.keys():
             data.train_losses[k].append(sum(l[k] for l in loss_vs)/len(loss_vs))
             data.train_accs  [k].append(sum(a[k] for a in acc_vs )/len(acc_vs ))
+         loss_vs = []
+         acc_vs  = []
 
       # Create the Plots
       if data.step_i > 0 and data.step_i % GRAPH_EVERY == 0:
@@ -219,8 +221,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
                   xs[name] = (np.arange(len(items[name]))+1)*AVERAGE_EVERY*BS*BLOCK_SIZE / 1_000_000.0
                   ys[name] = np.array(items[name])
                if is_delta:
-                  xs = { "zero": [min(xs["cheat_sheet"]), max(xs["cheat_sheet"])], "delta": xs["cheat_sheet"] }
-                  ys = { "zero": [0,                      0                     ], "delta": ys["cheat_sheet"] - ys["baseline_large"] }
+                  xs = { "zero": [min(xs["cheat_sheet"]), max(xs["cheat_sheet"])], "delta": xs["cheat_sheet"] }                        # type: ignore
+                  ys = { "zero": [0,                      0                     ], "delta": ys["cheat_sheet"] - ys["baseline_large"] } # type: ignore
                plt.clf()
                max_95th = 0.0
                for label in xs.keys():
