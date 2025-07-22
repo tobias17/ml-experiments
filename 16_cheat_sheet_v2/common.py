@@ -13,6 +13,8 @@ FILES_ROOT = Path(os.path.dirname(__file__))
 
 RAW_DATA_DIRNAME = "raw"
 WIKI_EMBED_DIRNAME = "wiki-embed"
+DATA_EMBED_DIRNAME = "data-embed"
+SPLICED_DIRNAME = "spliced"
 
 def dataset_root() -> Path:
    env_json = FILES_ROOT / "env.json"
