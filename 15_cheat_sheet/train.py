@@ -11,8 +11,11 @@ from model import ModelConfig, Model
 from common import make_filename, loglerp, load_tokenizer, ENTRIES_PER_FILE, BLOCK_SIZE
 
 
-CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=16)
-BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=24, ff_mult=6.0)
+# CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=16)
+# BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=24, ff_mult=6.0)
+
+CHEAT_SHEET    = ModelConfig(cross_attn=True,  n_layers=4)
+BASELINE_LARGE = ModelConfig(cross_attn=False, n_layers=6)
 
 
 @dataclass
@@ -67,9 +70,11 @@ class DataLoader:
       return process("tok"), process("wiki")
 
 
+TRAIN_DTYPE = dtypes.bfloat16
+
 BS   = 2
-LR_A = 2**-14
-LR_B = 2**-17
+LR_A = 2**-16
+LR_B = 2**-18
 
 AVERAGE_EVERY = 500
 GRAPH_EVERY   = 500
@@ -81,7 +86,7 @@ EVAL_GEN_AMOUNT     = 24
 
 
 def train(restore:str|None=None, keep_all_weights:bool=False):
-   Tensor.no_grad = False
+   dtypes.default_float = TRAIN_DTYPE
 
    data_loader = DataLoader()
    print(f"\nMax dataset size : {data_loader.max_index}\nMax dataset usage: {MAX_DATASET_ENTRIES}")
@@ -113,8 +118,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
    for i, (name, model) in enumerate(models.items()):
       params = nn.state.get_parameters(model)
       for p in params:
-         p.shard_((f"{Device.DEFAULT}:{i*2+1}", f"{Device.DEFAULT}:{i*2+2}"))
-         # p.to_(f"{Device.DEFAULT}:{i}")
+         # p.shard_((f"{Device.DEFAULT}:{i*2+1}", f"{Device.DEFAULT}:{i*2+2}"))
+         p.to_(f"{Device.DEFAULT}:{i}")
       optims[name] = nn.optim.AdamW(params, lr=LR_A, eps=1e-5)
 
    @TinyJit
@@ -129,7 +134,7 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
          optims[k].zero_grad()
          losses[k] = logits.sparse_categorical_crossentropy(y).backward()
          optims[k].step()
-         accs[k] = Tensor.cast(logits.argmax(-1) == y, dtypes.float32).mean().realize()
+         accs[k] = Tensor.cast(logits.argmax(-1) == y, TRAIN_DTYPE).mean().realize()
       return losses, accs
 
    def eval_step(model:Model, tok:Tensor, ctx:Tensor) -> Tensor:
@@ -174,14 +179,14 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
       # Set the optim LR for decaying items
       new_lr = loglerp(LR_A, LR_B, data.dataset_i / MAX_DATASET_ENTRIES)
       for o in optims.values():
-         o.lr.assign(Tensor([new_lr], device=o.lr.device))
+         o.lr.assign(Tensor([new_lr], device=o.lr.device, dtype=o.lr.dtype))
 
       # Perform Training Step
       with Tensor.train():
          tok, ctx = data_loader.get(data.dataset_i, BS)
          loss, acc = train_step(tok.realize(), ctx.realize())
-         loss_vs.append({ k:l.item() for k,l in loss.items()})
-         acc_vs .append({ k:a.item() for k,a in acc .items()})
+         loss_vs.append({ k:l.cast(dtypes.float32).item() for k,l in loss.items()})
+         acc_vs .append({ k:a.cast(dtypes.float32).item() for k,a in acc .items()})
 
       # Increment Counters
       data.step_i += 1
@@ -196,9 +201,8 @@ def train(restore:str|None=None, keep_all_weights:bool=False):
       ]))
 
       if data.step_i > 0 and data.step_i % EVAL_EVERY == 0:
-         with Tensor.test():
-            gens = run_evals()
-            data.eval_data.append(gens)
+         gens = run_evals()
+         data.eval_data.append(gens)
 
       # Average the Loss Data
       if data.step_i > 0 and data.step_i % AVERAGE_EVERY == 0:
