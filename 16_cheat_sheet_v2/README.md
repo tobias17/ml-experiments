@@ -16,7 +16,14 @@ The above is the values I am using on my tinybox, but they will be used by the f
 
 # Prepping the Dataset
 
-TODO
+**NOTE** The following dataset prep is for repeatability. A completed version will be uploaded and can be used instead.
+
+## Download
+
+The following will download all the necessary files.
+```
+python download_dataset.py
+```
 
 # Train the Model
 
