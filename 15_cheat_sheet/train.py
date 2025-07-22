@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt # type: ignore
 import numpy as np
 
 from util import compress, fmt_digits, fmt_percent, fmt_time
-from model import ModelConfig, Model
+from new_model import ModelConfig, Model
 from common import make_filename, loglerp, load_tokenizer, ENTRIES_PER_FILE, BLOCK_SIZE
 
 

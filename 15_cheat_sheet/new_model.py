@@ -75,6 +75,7 @@ class Attention:
       self.is_causal = is_causal
       self.n_rep = cfg.n_rep
       self.rara  = { "h":cfg.n_heads, "kvh":cfg.n_kv_heads, "d":cfg.head_d }
+      self.head_d = cfg.head_d
    def __call__(self, x:Tensor, freqs_cis:Tensor, z:Tensor|None=None) -> Tensor:
       x = self.pre_norm_x(x)
       z = x if z is None else self.pre_norm_z(z) # type: ignore
@@ -82,15 +83,10 @@ class Attention:
       q = self.proj_q(x)
       k,v = self.proj_kv(z).chunk(2, dim=-1)
 
-      q,k = apply_rotary_emb(q, k, freqs_cis)
-
-      q = q.rearrange('b c (h d) -> b h c d', **self.rara)
-      k,v = [
-         y.rearrange('b c (kvh d) -> b c kvh d', **self.rara)
-          .repeat((1, 1, 1, self.n_rep))
-          .rearrange('b c kvh (r d) -> b (kvh r) c d', **self.rara)
-         for y in (k,v)
-      ]
+      q,k,v = [y.rearrange('b c (h d) -> b c h d', d=self.head_d) for y in (q,k,v)]
+      q,k   = apply_rotary_emb(q, k, freqs_cis)
+      k,v   = [y.repeat((1, 1, 1, self.n_rep)).rearrange('b c h (d r) -> b c (h r) d', r=self.n_rep) for y in (k,v)]
+      q,k,v = [y.rearrange('b c h d -> b h c d') for y in (q,k,v)]
 
       h = Tensor.scaled_dot_product_attention(q, k, v, is_causal=self.is_causal)
       h = h.rearrange('b h c d -> b c (h d)')
@@ -132,7 +128,7 @@ class Model:
    def __call__(self, tok:Tensor, ctx:Tensor|None) -> Tensor:
       x = self.tok_emb(tok)
       z = self.tok_emb(ctx) if (ctx is not None) else None
-      freqs_cis = FreqCis.get(*self.freqs_cis_args).cast(x.dtype)
+      freqs_cis = FreqCis.get(*self.freqs_cis_args).cast(x.dtype).to(tok.device)[:,:int(tok.shape[1]),:,:,:]
       for layer in self.layers:
          x, z = layer(x, freqs_cis, z)
       return self.proj_out(x)
