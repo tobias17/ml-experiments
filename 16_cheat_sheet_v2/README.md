@@ -37,6 +37,13 @@ If you want to test that it works, run the following (note: this can be done bef
 python embed_wikipedia.py --run use
 ```
 
+## Embed Fineweb
+
+Run the following script to chunk the fineweb dataset and create embeddings for them.
+```
+python embed_fineweb.py
+```
+
 # Train the Model
 
 TODO
