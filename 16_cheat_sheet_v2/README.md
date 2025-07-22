@@ -25,6 +25,18 @@ The following will download all the necessary files.
 python download_dataset.py
 ```
 
+## Embed Wikipedia
+
+Run the following script to split the en wiki dataset into chunks of text and create embeddings for them.
+```
+python embed_wikipedia.py
+```
+
+If you want to test that it works, run the following (note: this can be done before all the blobs are created).
+```
+python embed_wikipedia.py --run use
+```
+
 # Train the Model
 
 TODO
