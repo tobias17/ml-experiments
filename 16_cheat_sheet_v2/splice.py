@@ -1,6 +1,5 @@
 from tinygrad import Tensor, dtypes, nn, Device, TinyJit, Context
 from tqdm import tqdm
-import os
 
 from common import (
    make_filename, cosine_similarity, dataset_root,
@@ -19,7 +18,7 @@ def main():
    data_root = dataset_root() / DATA_EMBED_DIRNAME
    assert wiki_root.exists() and data_root.exists()
 
-   out_root = dataset_root() / SPLICED_DIRNAME
+   out_root = dataset_root() / f"{SPLICED_DIRNAME}-best1"
    if not out_root.exists():
       out_root.mkdir()
 
@@ -30,7 +29,7 @@ def main():
    tok_disktensors = []
    for i in range(1024):
       filepath = wiki_root / make_filename(i)
-      if filepath.exists():
+      if not filepath.exists():
          break
       sd = nn.state.safe_load(str(filepath))
       for k, v in sd.items():
@@ -83,6 +82,8 @@ def main():
       wiki_tokens = []
       wiki_blocks = []
       for k in tqdm(range(LOAD_SLICES), disable=False):
+         # print(f"{fine_web_emb.shape=}")
+         # print(f"{k*LOAD_SIZE=}")
          wiki_blocks.append(get_closest_wiki_entry(fine_web_emb[k*LOAD_SIZE:(k+1)*LOAD_SIZE].contiguous().realize())) # type: ignore
          if len(wiki_blocks) >= 64:
             wiki_tokens.append(Tensor.cat(*wiki_blocks).realize())
