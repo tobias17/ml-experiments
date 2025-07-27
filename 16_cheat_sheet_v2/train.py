@@ -86,7 +86,9 @@ def train(cfg_name:str, restore:str|None=None, keep_all_weights:bool=False, only
    dtypes.default_float = TRAIN_DTYPE
 
    data_loader = DataLoader()
-   print(f"\nMax dataset size : {data_loader.max_index}\nMax dataset usage: {MAX_DATASET_ENTRIES}")
+   print()
+   if only_bake: print("Only baking...")
+   print(f"Max dataset size : {data_loader.max_index}\nMax dataset usage: {MAX_DATASET_ENTRIES}")
 
    model = get_model(cfg_name)
 
@@ -145,8 +147,8 @@ def train(cfg_name:str, restore:str|None=None, keep_all_weights:bool=False, only
       start_time = time.perf_counter()
 
       # Overrun check
-      if data.dataset_i >= MAX_DATASET_ENTRIES or (only_bake and data.step_i > 10):
-         print(f"Trained on {data.dataset_i} tokens")
+      if data.dataset_i >= MAX_DATASET_ENTRIES or (only_bake and data.step_i >= 10):
+         print(f"\nTrained on {data.dataset_i*BLOCK_SIZE} tokens\n")
          break
 
       # Set the optime LR for decaying items
@@ -244,4 +246,4 @@ if __name__ == "__main__":
    parser.add_argument('--only-bake', action='store_true')
    args = parser.parse_args()
 
-   train(args.cfg_name, args.restore)
+   train(args.cfg_name, args.restore, only_bake=args.only_bake)
