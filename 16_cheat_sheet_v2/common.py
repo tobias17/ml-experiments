@@ -79,3 +79,44 @@ def split_list_with_overlap(input_list:List, block_size:int, target_overlap:int)
       result.append(input_list[s:s+block_size])
 
    return result
+
+def shrink_format(x:float) -> str:
+   return f"{x:.2f}" if x < 10 else (f"{x:.1f}" if x < 100 else str(int(x)))
+
+def compress(x:float, labels:List[str], step:int=1000, fmt=shrink_format) -> str:
+   i = 0
+   padded_labels = [""] + labels
+   while True:
+      if x < step or i == len(padded_labels) - 1:
+         return fmt(x) + padded_labels[i]
+      x /= step
+      i += 1
+
+def fmt_digits(x:float, digits:int) -> str:
+   r = f"{x:.8f}"
+   if len(r.split(".", 1)[0]) == digits-1:
+      return " " + r[:digits-1]
+   return r[:digits]
+
+def fmt_percent(x:float, digits:int=4) -> str:
+   return fmt_digits(x*100, digits) + "%"
+
+def fmt_time(x:float, digits:int=4) -> str:
+   if x > 24*3600:
+      v, u = x/(24*3600), "days"
+   elif x > 3600:
+      v, u = x/3600, "hr"
+   elif x > 60:
+      v, u = x/60, "min"
+   elif x > 1*10:
+      v, u = x, "sec"
+   else:
+      v, u = x*1000, "ms"
+   return f"{fmt_digits(v, digits)} {u}"
+
+def loglerp(a:float, b:float, t:float) -> float:
+   t = max(0.0, min(1.0, t))
+   ea = math.log2(a)
+   eb = math.log2(b)
+   e = (1 - t) * ea + t * eb
+   return 2 ** e
