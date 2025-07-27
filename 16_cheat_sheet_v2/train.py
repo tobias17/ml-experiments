@@ -51,7 +51,7 @@ class DataLoader:
 TRAIN_DTYPE = dtypes.bfloat16
 GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(6))
 
-DEVICE_BS = 4
+DEVICE_BS = 2
 GLOBAL_BS = DEVICE_BS * len(GPUS)
 LR_A = 2**-16
 LR_B = 2**-18
@@ -65,9 +65,9 @@ MAX_DATASET_ENTRIES = 18_000_000
 MAX_KEEP_WEIGHTS = 2
 
 CONFIGS = {
-   "cheat_sheet":     ModelConfig(cross_attn=True,  n_layers=32),
-   "baseline_mem":    ModelConfig(cross_attn=False, n_layers=4),
-   "baseline_no_ctx": ModelConfig(cross_attn=False, n_layers=4),
+   "cheat_sheet":     ModelConfig(cross_attn=True,  n_layers=24),
+   "baseline_ctx":    ModelConfig(cross_attn=False, n_layers=32, ff_mult=6.0, ctx_length=1024),
+   "baseline_no_ctx": ModelConfig(cross_attn=False, n_layers=40, ff_mult=8.0),
 }
 
 def get_model(cfg_name:str, print_params:bool=True) -> Model:
@@ -82,7 +82,7 @@ def get_model(cfg_name:str, print_params:bool=True) -> Model:
    return model
 
 
-def train(cfg_name:str, restore:str|None=None, keep_all_weights:bool=False) -> None:
+def train(cfg_name:str, restore:str|None=None, keep_all_weights:bool=False, only_bake:bool=False) -> None:
    dtypes.default_float = TRAIN_DTYPE
 
    data_loader = DataLoader()
@@ -145,7 +145,7 @@ def train(cfg_name:str, restore:str|None=None, keep_all_weights:bool=False) -> N
       start_time = time.perf_counter()
 
       # Overrun check
-      if data.dataset_i >= MAX_DATASET_ENTRIES:
+      if data.dataset_i >= MAX_DATASET_ENTRIES or (only_bake and data.step_i > 10):
          print(f"Trained on {data.dataset_i} tokens")
          break
 
@@ -241,6 +241,7 @@ if __name__ == "__main__":
    parser = argparse.ArgumentParser()
    parser.add_argument('cfg_name', choices=list(CONFIGS.keys()))
    parser.add_argument('--restore', type=str)
+   parser.add_argument('--only-bake', action='store_true')
    args = parser.parse_args()
 
    train(args.cfg_name, args.restore)
