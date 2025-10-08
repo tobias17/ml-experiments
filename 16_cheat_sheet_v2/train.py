@@ -48,10 +48,10 @@ class DataLoader:
          return page[key][entry_index:entry_index+amount].contiguous().to(Device.DEFAULT).realize()
       return process("tok"), process("wiki")
 
-TRAIN_DTYPE = dtypes.bfloat16
+TRAIN_DTYPE = dtypes.float32
 GPUS = tuple(f"{Device.DEFAULT}:{i}" for i in range(6))
 
-DEVICE_BS = 2
+DEVICE_BS = 1
 GLOBAL_BS = DEVICE_BS * len(GPUS)
 LR_A = 2**-16
 LR_B = 2**-18
@@ -62,7 +62,7 @@ EVAL_EVERY    = 10000
 SAVE_EVERY    = 10000
 
 MAX_DATASET_ENTRIES = 18_000_000
-MAX_KEEP_WEIGHTS = 2
+MAX_KEEP_WEIGHTS = 3
 
 CONFIGS = {
    "cheat_sheet":     ModelConfig(cross_attn=True,  n_layers=24),
