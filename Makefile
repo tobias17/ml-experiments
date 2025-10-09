@@ -1,7 +1,7 @@
 
 CMD = python 16_cheat_sheet_v2/train.py
 EXTRA_ARGS =
-JITBEAM ?= 50
+JITBEAM ?= 20
 
 bake_all:
 	$(MAKE) run_cheat_sheet EXTRA_ARGS=--only-bake

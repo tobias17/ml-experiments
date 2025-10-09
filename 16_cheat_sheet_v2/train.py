@@ -65,9 +65,9 @@ MAX_DATASET_ENTRIES = 18_000_000
 MAX_KEEP_WEIGHTS = 3
 
 CONFIGS = {
-   "cheat_sheet":     ModelConfig(cross_attn=True,  n_layers=24),
-   "baseline_ctx":    ModelConfig(cross_attn=False, n_layers=32, ff_mult=6.0, ctx_length=1024),
-   "baseline_no_ctx": ModelConfig(cross_attn=False, n_layers=40, ff_mult=8.0),
+   "cheat_sheet":     ModelConfig(cross_attn=True,  n_layers=22),
+   "baseline_ctx":    ModelConfig(cross_attn=False, n_layers=28, ff_mult=6.0, ctx_length=1024),
+   "baseline_no_ctx": ModelConfig(cross_attn=False, n_layers=34, ff_mult=8.0),
 }
 
 def get_model(cfg_name:str, print_params:bool=True) -> Model:
