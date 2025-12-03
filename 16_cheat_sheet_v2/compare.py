@@ -39,6 +39,25 @@ def main(cheat_sheet_json_path:Path, baseline_json_path:Path):
       plt.savefig(save_path, dpi=100)
       print(f"Saving to {save_path}...")
 
+      BUCKETS = 128
+      amnt_per_bucket = size // BUCKETS
+      size = BUCKETS * amnt_per_bucket
+      plt.clf()
+      for label, data in {"cheat_sheet": cheat_sheet_data, "baseline": baseline_data}.items():
+         ys = np.array(data[key][:size], dtype=np.float32).reshape(BUCKETS, amnt_per_bucket).mean(axis=1, keepdims=False)
+         xs = (np.arange(len(ys))+1)*AVERAGE_EVERY*GLOBAL_BS*BLOCK_SIZE*amnt_per_bucket / 1_000_000_000.0
+         plt.plot(xs, ys, label=label)
+      plt.xlim((0, None))
+      plt.xlabel("Tokens (Billions)")
+      plt.ylabel(name)
+      plt.title(f"Train {name[0].upper()}{name[1:]}")
+      plt.legend()
+      figure = plt.gcf()
+      figure.set_size_inches(18, 10)
+      save_path = os.path.join(os.path.dirname(__file__), f"joined_{name}.png")
+      plt.savefig(save_path, dpi=100)
+      print(f"Saving to {save_path}...")
+
 
 if __name__ == "__main__":
    parser = argparse.ArgumentParser()
