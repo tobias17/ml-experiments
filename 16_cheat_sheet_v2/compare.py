@@ -21,13 +21,13 @@ def main(cheat_sheet_json_path:Path, baseline_json_path:Path):
       ys = np.array(cheat_sheet_data[key][:size], dtype=np.float32) - np.array(baseline_data[key][:size], dtype=np.float32)
       xs = (np.arange(len(ys))+1)*AVERAGE_EVERY*GLOBAL_BS*BLOCK_SIZE / 1_000_000_000.0
       plt.clf()
-      ymax = 1.2 * np.percentile(ys, 98)
-      if ymax > 0: ymax *= 1.2
-      else: ymax = 0.0
-      ymin = 1.2 * np.percentile(ys, 2)
-      if ymin < 0: ymin *= 1.2
-      else: ymin = 0.0
+      ymax = 1.2 * np.percentile(ys, 95)
+      ymin = 1.2 * np.percentile(ys, 5)
+      diff = ymax - ymin
+      ymax += diff * 0.2
+      ymin -= diff * 0.2
       plt.plot(xs, ys)
+      plt.plot([xs[0], xs[-1]], [0.0, 0.0])
       plt.ylim((ymin, ymax))
       plt.xlim((0, None))
       plt.xlabel("Tokens (Billions)")
